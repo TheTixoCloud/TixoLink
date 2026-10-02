@@ -109,6 +109,34 @@ netfilter::_chain_rule_count() {
     netfilter::_ipt -t "$table" -S "$chain" 2>/dev/null | grep -c '^-A '
 }
 
+# netfilter::_wipe_mapping_rules <table> <chain> <tag>
+# Removes every rule in <chain> tagged with <tag>, regardless of its
+# content. This is what makes forwarder_netfilter_apply a true per-mapping
+# reconcile (like engines/gre.sh's create/reconcile): rather than only
+# ever adding rules and separately content-matching a specific old rule
+# for removal (fragile, and wrong when a mapping's own content changes
+# across protocol/nat_mode/ports), apply() always wipes exactly this
+# mapping's own previously-applied rules first, then re-adds the current
+# expected set. Deletes by line number, in descending order, computed
+# from `-S` output filtered to `-A` lines only (iptables' rule numbering
+# for -D excludes the leading `-N <chain>` declaration line that -S also
+# prints - confirmed empirically before relying on it here).
+netfilter::_wipe_mapping_rules() {
+    local table="$1" chain="$2" tag="$3"
+    netfilter::_chain_exists "$table" "$chain" || return 0
+    local -a line_numbers=()
+    local n
+    while IFS= read -r n; do
+        [[ -n "$n" ]] && line_numbers+=("$n")
+    done < <(netfilter::_ipt -t "$table" -S "$chain" 2>/dev/null \
+        | grep '^-A ' | grep -n -F -- "$tag" | cut -d: -f1 | sort -rn)
+    for n in "${line_numbers[@]:-}"; do
+        [[ -z "$n" ]] && continue
+        nf::_do "DELETE RULE" netfilter::_ipt -t "$table" -D "$chain" "$n" || return "$EXIT_GENERIC"
+    done
+    return 0
+}
+
 # netfilter::_maybe_remove_hook <table> <chain> <parent>
 # Removes the jump and the now-empty TixoLink-owned chain, but only if it
 # is both empty and proven TixoLink-owned.
@@ -286,6 +314,18 @@ forwarder_netfilter_apply() {
         netfilter::_ensure_chain_and_hook nat "$NF_CHAIN_SNAT" POSTROUTING || { NF_DRY_RUN=0; return "$EXIT_GENERIC"; }
     fi
 
+    # Reconcile, not just add: wipe whatever this exact mapping id
+    # previously applied (possibly a different protocol/port/nat_mode)
+    # before re-adding its current expected set. This makes apply() a
+    # true idempotent "ensure mapping <id> looks like this" operation -
+    # the same standard engines/gre.sh already holds itself to - so
+    # modules/forwarding.sh's edit flow can call apply() alone for every
+    # engine, never a separate "remove the old one" step that would be
+    # wrong for identity-addressed engines (see forwarding::edit).
+    netfilter::_wipe_mapping_rules nat "$NF_CHAIN_DNAT" "$tag" || { NF_DRY_RUN=0; return "$EXIT_GENERIC"; }
+    netfilter::_wipe_mapping_rules filter "$NF_CHAIN_FWD" "$tag" || { NF_DRY_RUN=0; return "$EXIT_GENERIC"; }
+    netfilter::_wipe_mapping_rules nat "$NF_CHAIN_SNAT" "$tag" || { NF_DRY_RUN=0; return "$EXIT_GENERIC"; }
+
     local proto
     while IFS= read -r proto; do
         [[ -z "$proto" ]] && continue
@@ -315,43 +355,21 @@ forwarder_netfilter_apply() {
 }
 
 # forwarder_netfilter_remove <tunnel-json> <mapping-json> [dry-run]
+# Removes every rule tagged with this mapping's id, in any chain,
+# regardless of its current content - the same wipe primitive apply()
+# uses for reconcile, so remove and apply can never disagree about what
+# "this mapping's rules" means.
 forwarder_netfilter_remove() {
     local tunnel_json="$1" mapping="$2"
     NF_DRY_RUN="${3:-0}"
 
-    local tunnel_id iface tag remote_addr remote_port local_port listen_addr nat_mode
+    local tunnel_id tag
     tunnel_id="$(jq -r '.id' <<<"$tunnel_json")"
-    iface="$(jq -r '.engine_config.interface' <<<"$tunnel_json")"
     tag="$(netfilter::_tag "$tunnel_id" "$(jq -r '.id' <<<"$mapping")")"
-    remote_addr="$(netfilter::_resolve_remote_address "$tunnel_json" "$mapping")"
-    remote_port="$(jq -r '.remote_port' <<<"$mapping")"
-    local_port="$(jq -r '.local_port' <<<"$mapping")"
-    listen_addr="$(jq -r '.listen_address' <<<"$mapping")"
-    nat_mode="$(jq -r '.nat_mode' <<<"$mapping")"
 
-    local proto
-    while IFS= read -r proto; do
-        [[ -z "$proto" ]] && continue
-
-        local -a dnat_args fwd_args
-        mapfile -t dnat_args < <(netfilter::_dnat_args "$proto" "$listen_addr" "$local_port" "$remote_addr" "$remote_port" "$tag")
-        if netfilter::_ipt -t nat -C "$NF_CHAIN_DNAT" "${dnat_args[@]}" >/dev/null 2>&1; then
-            nf::_do "DELETE DNAT" netfilter::_ipt -t nat -D "$NF_CHAIN_DNAT" "${dnat_args[@]}" || true
-        fi
-
-        mapfile -t fwd_args < <(netfilter::_fwd_args "$proto" "$remote_addr" "$remote_port" "$tag")
-        if netfilter::_ipt -t filter -C "$NF_CHAIN_FWD" "${fwd_args[@]}" >/dev/null 2>&1; then
-            nf::_do "DELETE FORWARD" netfilter::_ipt -t filter -D "$NF_CHAIN_FWD" "${fwd_args[@]}" || true
-        fi
-
-        if [[ "$nat_mode" == "nat" ]]; then
-            local -a snat_args
-            mapfile -t snat_args < <(netfilter::_snat_args "$proto" "$remote_addr" "$remote_port" "$iface" "$tag")
-            if netfilter::_ipt -t nat -C "$NF_CHAIN_SNAT" "${snat_args[@]}" >/dev/null 2>&1; then
-                nf::_do "DELETE MASQUERADE" netfilter::_ipt -t nat -D "$NF_CHAIN_SNAT" "${snat_args[@]}" || true
-            fi
-        fi
-    done < <(netfilter::_protocols "$mapping")
+    netfilter::_wipe_mapping_rules nat "$NF_CHAIN_DNAT" "$tag" || { NF_DRY_RUN=0; return "$EXIT_GENERIC"; }
+    netfilter::_wipe_mapping_rules filter "$NF_CHAIN_FWD" "$tag" || { NF_DRY_RUN=0; return "$EXIT_GENERIC"; }
+    netfilter::_wipe_mapping_rules nat "$NF_CHAIN_SNAT" "$tag" || { NF_DRY_RUN=0; return "$EXIT_GENERIC"; }
 
     netfilter::_maybe_remove_hook nat "$NF_CHAIN_SNAT" POSTROUTING
     netfilter::_maybe_remove_hook filter "$NF_CHAIN_FWD" FORWARD

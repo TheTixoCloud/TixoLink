@@ -67,12 +67,16 @@ pass() { PASS=$((PASS + 1)); printf '  ok - %s\n' "$1"; }
 fail() { FAIL=$((FAIL + 1)); printf '  FAIL - %s\n' "$1"; }
 check() { local desc="$1"; shift; if "$@" >/dev/null 2>&1; then pass "$desc"; else fail "$desc"; fi; }
 check_eq() { if [[ "$2" == "$3" ]]; then pass "$1"; else fail "$1 (got '$2', expected '$3')"; fi; }
+# grep_count <pattern> <file> - like `grep -c`, but always prints exactly
+# one line regardless of match count (grep -c exits 1 on zero matches).
+grep_count() { [[ -f "$2" ]] && { grep -c "$1" "$2" 2>/dev/null || true; } || echo 0; }
 
 HOST_NETNS_BEFORE="$(ip netns list 2>/dev/null | sort)"
 
 cleanup() {
     [[ -f "$HAPROXY_PID_FILE" ]] && ip netns exec "$NS_ENTRY" kill "$(cat "$HAPROXY_PID_FILE")" >/dev/null 2>&1
     [[ -n "${BACKEND_PID:-}" ]] && kill "$BACKEND_PID" >/dev/null 2>&1
+    [[ -n "${FOREIGN_PID:-}" ]] && kill "$FOREIGN_PID" >/dev/null 2>&1
     ip netns del "$NS_ENTRY" >/dev/null 2>&1 || true
     ip netns del "$NS_BACKEND" >/dev/null 2>&1 || true
     rm -rf -- "$SANDBOX_ROOT"
@@ -158,13 +162,23 @@ echo "== Real TCP forwarding through HAProxy =="
 check "client -> haproxy TCP listener -> backend (through GRE)" \
     bash -c "echo HAPROXY_HELLO | ip netns exec '$NS_ENTRY' timeout 3 socat - TCP4:192.0.2.1:9090 | grep -q HAPROXY_HELLO"
 
-echo "== Change detection: re-applying an identical mapping triggers no reload =="
+echo "== Change detection via forwarding::edit: identical edit is a true no-op =="
+# Regression test for the Phase 4 hardening fix: forwarding::edit used to
+# apply(new) then unconditionally remove(old) by the SAME mapping id,
+# which for an identity-addressed/regenerating engine like HAProxy meant
+# ANY edit - including a no-op one - deleted the mapping right after
+# "successfully" updating it. Calling the real tixolink forwarding::edit
+# entry point here (not forwarder::dispatch directly) exercises that
+# exact previously-broken path end to end.
 RELOADS_BEFORE="$(cat "$RELOAD_LOG")"
-CURRENT_TUNNEL_JSON="$(entry config::tunnel_read "$TUN_ID")"
-SAME_MAPPING="$(printf '%s' "$CURRENT_TUNNEL_JSON" | jq -c --arg mid "$MAPPING_ID" '.forwarding.mappings[] | select(.id == $mid)')"
-entry forwarder::dispatch haproxy apply "$CURRENT_TUNNEL_JSON" "$SAME_MAPPING" 0 >/dev/null 2>&1
+entry forwarding::edit "$TUN_ID" "$MAPPING_ID" "9090" 0 >/dev/null
+check_eq "identical edit (forwarding::edit) reports success" "$?" "0"
 RELOADS_AFTER="$(cat "$RELOAD_LOG")"
-check_eq "re-applying an identical mapping triggers no additional reload" "$RELOADS_AFTER" "$RELOADS_BEFORE"
+check_eq "identical edit triggers no additional reload" "$RELOADS_AFTER" "$RELOADS_BEFORE"
+check_eq "identical edit did NOT delete the mapping from the managed config" \
+    "$(grep_count "tixolink:${TUN_ID}:${MAPPING_ID}" "$FAKE_HAPROXY_CFG")" "1"
+check "mapping still forwards after the identical edit (not silently deleted)" \
+    bash -c "echo STILL_HERE | ip netns exec '$NS_ENTRY' timeout 3 socat - TCP4:192.0.2.1:9090 | grep -q STILL_HERE"
 
 echo "== Invalid candidate is rejected without reloading =="
 RELOADS_BEFORE="$(cat "$RELOAD_LOG")"
@@ -175,6 +189,21 @@ INVALID_STATUS=$?
 RELOADS_AFTER="$(cat "$RELOAD_LOG")"
 check_eq "UDP+HAProxy mapping rejected at validation" "$INVALID_STATUS" "3"
 check_eq "rejected candidate caused no reload" "$RELOADS_AFTER" "$RELOADS_BEFORE"
+
+echo "== Bind-conflict preflight: real foreign process, never stolen =="
+# A real, unrelated TCP listener - not TixoLink's, not haproxy - sitting
+# on a port before any mapping is requested there.
+ip netns exec "$NS_ENTRY" socat TCP4-LISTEN:7777,bind=192.0.2.1,fork EXEC:cat \
+    >"$SANDBOX_ROOT/foreign.log" 2>&1 &
+FOREIGN_PID=$!
+sleep 0.3
+check "foreign process is really listening on port 7777" \
+    bash -c "ip netns exec '$NS_ENTRY' ss -ltn | grep -q ':7777'"
+entry forwarding::add "$TUN_ID" tcp "7777" "0.0.0.0" "" "nat" 0 >/dev/null 2>&1
+check_eq "adding a mapping on a port a real foreign process already holds is refused" "$?" "4"
+check "the foreign process is still alive (never killed/stolen from)" kill -0 "$FOREIGN_PID"
+kill "$FOREIGN_PID" >/dev/null 2>&1
+FOREIGN_PID=""
 
 echo "== Cleanup =="
 entry forwarding::remove "$TUN_ID" "$MAPPING_ID" 0 >/dev/null

@@ -206,6 +206,95 @@ test_haproxy_detect_malformed_blocks_accepts_no_file() {
     haproxy::_detect_malformed_blocks
 }
 
+# --- haproxy: bind-conflict preflight -----------------------------------------
+
+reset_store() { rm -rf -- "$TIXOLINK_ETC_DIR" "$TIXOLINK_VAR_DIR"; rm -f "$TIXOLINK_HAPROXY_CFG"; }
+
+test_addrs_overlap_wildcard_matches_anything() {
+    haproxy::_addrs_overlap "0.0.0.0" "203.0.113.5"
+}
+
+test_addrs_overlap_distinct_specific_addresses_do_not_overlap() {
+    ! haproxy::_addrs_overlap "203.0.113.5" "203.0.113.6"
+}
+
+test_addrs_overlap_identical_specific_addresses_overlap() {
+    haproxy::_addrs_overlap "203.0.113.5" "203.0.113.5"
+}
+
+test_bind_in_base_config_detects_matching_port() {
+    cat > "$TIXOLINK_HAPROXY_CFG" <<EOF
+global
+defaults
+frontend admin
+    bind 0.0.0.0:19999
+EOF
+    haproxy::_bind_in_base_config "0.0.0.0" "19999"
+}
+
+test_bind_in_base_config_ignores_different_port() {
+    cat > "$TIXOLINK_HAPROXY_CFG" <<EOF
+global
+frontend admin
+    bind 0.0.0.0:19999
+EOF
+    ! haproxy::_bind_in_base_config "0.0.0.0" "443"
+}
+
+test_bind_in_base_config_ignores_commented_bind() {
+    cat > "$TIXOLINK_HAPROXY_CFG" <<EOF
+global
+    # bind 0.0.0.0:443
+EOF
+    ! haproxy::_bind_in_base_config "0.0.0.0" "443"
+}
+
+test_bind_occupied_by_other_process_free_port_reports_free() {
+    # Port 1 in the 1xxxx range is extremely unlikely to have a real
+    # listener in any test environment.
+    th::assert_eq "$(haproxy::_bind_occupied_by_other_process "0.0.0.0" "18237")" "free"
+}
+
+test_bind_occupied_by_other_process_reports_unknown_when_ss_missing() {
+    # Run in a subshell so clobbering PATH to hide `ss` never escapes
+    # into the rest of the test run.
+    local result
+    result="$(PATH="/nonexistent-bin-dir-for-test" haproxy::_bind_occupied_by_other_process "0.0.0.0" "443")"
+    th::assert_eq "$result" "unknown"
+}
+
+test_check_conflicts_blocks_when_base_config_already_binds_port() {
+    reset_store
+    cat > "$TIXOLINK_HAPROXY_CFG" <<EOF
+global
+frontend admin
+    bind 0.0.0.0:8443
+EOF
+    local mapping; mapping="$(jq -nc '{id:"m0000001", protocol:"tcp", listen_address:"0.0.0.0", local_port:"8443", remote_address:null, remote_port:"443", nat_mode:"nat"}')"
+    local status=0
+    forwarder_haproxy_check_conflicts "aaaaaaaa" "$mapping" 2>/dev/null || status=$?
+    th::assert_eq "$status" "$EXIT_CONFLICT"
+}
+
+test_check_conflicts_allows_free_port() {
+    reset_store
+    local mapping; mapping="$(jq -nc '{id:"m0000002", protocol:"tcp", listen_address:"0.0.0.0", local_port:"18238", remote_address:null, remote_port:"443", nat_mode:"nat"}')"
+    forwarder_haproxy_check_conflicts "aaaaaaaa" "$mapping"
+}
+
+test_check_conflicts_self_exclusion_does_not_reject_unchanged_bind() {
+    reset_store
+    local tunnel_json; tunnel_json="$(jq -nc '{id:"aaaaaaaa", name:"t", engine:"gre", forwarding:{engine:"haproxy", mappings:[
+        {id:"m0000003", protocol:"tcp", listen_address:"0.0.0.0", local_port:"9999", remote_address:null, remote_port:"443", nat_mode:"nat"}
+    ]}}')"
+    config::tunnel_write "aaaaaaaa" "$tunnel_json"
+    # Editing mapping m0000003 without changing its bind: same tunnel,
+    # same mapping id excluded, same listen_address/local_port - must
+    # not be rejected as "already represented elsewhere".
+    local candidate; candidate="$(jq -nc '{id:"m0000003", protocol:"tcp", listen_address:"0.0.0.0", local_port:"9999", remote_address:null, remote_port:"8080", nat_mode:"nat"}')"
+    forwarder_haproxy_check_conflicts "aaaaaaaa" "$candidate" "m0000003"
+}
+
 th::run test_netfilter_port_arg_converts_range_hyphen_to_colon
 th::run test_netfilter_port_arg_leaves_single_port_unchanged
 th::run test_netfilter_dnat_args_include_dport_and_destination
@@ -232,5 +321,16 @@ th::run test_haproxy_base_content_strips_managed_block_preserves_rest
 th::run test_haproxy_detect_malformed_blocks_rejects_duplicate_begin
 th::run test_haproxy_detect_malformed_blocks_accepts_well_formed_file
 th::run test_haproxy_detect_malformed_blocks_accepts_no_file
+th::run test_addrs_overlap_wildcard_matches_anything
+th::run test_addrs_overlap_distinct_specific_addresses_do_not_overlap
+th::run test_addrs_overlap_identical_specific_addresses_overlap
+th::run test_bind_in_base_config_detects_matching_port
+th::run test_bind_in_base_config_ignores_different_port
+th::run test_bind_in_base_config_ignores_commented_bind
+th::run test_bind_occupied_by_other_process_free_port_reports_free
+th::run test_bind_occupied_by_other_process_reports_unknown_when_ss_missing
+th::run test_check_conflicts_blocks_when_base_config_already_binds_port
+th::run test_check_conflicts_allows_free_port
+th::run test_check_conflicts_self_exclusion_does_not_reject_unchanged_bind
 
 th::summary

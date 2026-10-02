@@ -166,8 +166,25 @@ check "other TCP mapping (8080, same-port) still works after removing the remap 
 check "UDP mapping still works after removing an unrelated TCP mapping" \
     bash -c "echo STILL_UDP | ip netns exec '$NS_CLIENT' timeout 3 socat -t2 - UDP4:203.0.113.2:9000 | grep -q STILL_UDP"
 
+echo "== Edit: identical edit is a no-op; real edit correctly transitions =="
+check_eq "identical edit (same port) reports success" \
+    "$(entry forwarding::edit "$TUN_ID" "$MAPPING_SAME_PORT" "8080" 0 >/dev/null 2>&1; echo $?)" "0"
+check "mapping still forwards after an identical edit (not disrupted)" \
+    bash -c "echo UNCHANGED | ip netns exec '$NS_CLIENT' timeout 3 socat - TCP4:203.0.113.2:8080 | grep -q UNCHANGED"
+
+entry forwarding::edit "$TUN_ID" "$MAPPING_SAME_PORT" "8081:8080" 0 >/dev/null
+check_eq "real edit (8080 -> remap 8081:8080) succeeds" "$?" "0"
+check "new port (8081) forwards after the edit" \
+    bash -c "echo NEW_PORT | ip netns exec '$NS_CLIENT' timeout 3 socat - TCP4:203.0.113.2:8081 | grep -q NEW_PORT"
+check "old port (8080) no longer forwards after the edit (stale rule reconciled away)" \
+    bash -c "! (echo X | ip netns exec '$NS_CLIENT' timeout 2 socat - TCP4:203.0.113.2:8080 2>/dev/null | grep -q X)"
+check "UDP mapping is unaffected by editing an unrelated TCP mapping" \
+    bash -c "echo STILL_UDP2 | ip netns exec '$NS_CLIENT' timeout 3 socat -t2 - UDP4:203.0.113.2:9000 | grep -q STILL_UDP2"
+
 echo "== Conflict / duplicate rejection =="
-entry forwarding::add "$TUN_ID" tcp "8080" "0.0.0.0" "" "nat" 0 >/dev/null 2>&1
+# Port 8080 was freed by the edit above (moved to 8081); 8081 is now the
+# occupied one.
+entry forwarding::add "$TUN_ID" tcp "8081" "0.0.0.0" "" "nat" 0 >/dev/null 2>&1
 check_eq "adding a duplicate/conflicting mapping (same listen port) is rejected" "$?" "4"
 
 echo "== Dry-run is a no-op =="

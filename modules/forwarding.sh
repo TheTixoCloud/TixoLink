@@ -12,6 +12,25 @@ readonly TIXOLINK_MODULE_FORWARDING_SH_LOADED=1
 
 readonly TIXOLINK_DEFAULT_NAT_MODE="nat"
 
+# forwarding::_normalize_mapping <mapping-json>
+# Projects a mapping onto only its semantically meaningful fields, with
+# consistent key ordering (jq -S), for no-op-edit comparison. Deliberately
+# excludes id/created_at/updated_at (identity and bookkeeping, not
+# configuration) and performs no semantic resolution (e.g. a null
+# remote_address is NOT resolved to the tunnel's inner_remote_ip here) -
+# normalization is about canonicalizing *representation* of the same
+# input, never about concluding two different inputs are equivalent.
+forwarding::_normalize_mapping() {
+    jq -Sc '{
+        protocol: .protocol,
+        listen_address: .listen_address,
+        local_port: .local_port,
+        remote_address: (.remote_address // null),
+        remote_port: .remote_port,
+        nat_mode: .nat_mode
+    }' <<<"$1"
+}
+
 # forwarding::_new_mapping_id <tunnel-json>
 forwarding::_new_mapping_id() {
     local tunnel_json="$1" id attempt
@@ -160,6 +179,21 @@ forwarding::edit() {
     new_mapping="$(jq -c --arg local_port "$local_port" --arg remote_port "$remote_port" --arg now "$now" \
         '.local_port = $local_port | .remote_port = $remote_port | .updated_at = $now' <<<"$old_mapping")"
 
+    # Semantic no-op detection, BEFORE any forwarder verb is called at
+    # all (not even validate/check_conflicts) - comparing normalized
+    # projections so key ordering or incidental JSON formatting
+    # differences between the stored mapping and the freshly-built
+    # candidate can never cause a real no-op to be missed, while still
+    # requiring every semantically meaningful field to match exactly so a
+    # real change is never hidden. On a true no-op: zero firewall
+    # mutation, zero HAProxy rewrite/reload, mapping id and the ownership
+    # ledger are both left completely untouched, and we still report
+    # success (nothing failed - there was simply nothing to do).
+    if [[ "$(forwarding::_normalize_mapping "$old_mapping")" == "$(forwarding::_normalize_mapping "$new_mapping")" ]]; then
+        ui::info "Mapping $mapping_id is already configured as requested; no changes applied."
+        return 0
+    fi
+
     forwarder::dispatch "$engine" validate "$tunnel_json" "$new_mapping" || return "$EXIT_VALIDATION"
     forwarder::dispatch "$engine" check_conflicts "$id" "$new_mapping" "$mapping_id" || return $?
 
@@ -169,23 +203,46 @@ forwarding::edit() {
         return 0
     fi
 
-    # New-before-old: apply the new mapping's rules first; only remove the
-    # old mapping's rules once the new ones are confirmed active, so a
-    # failed apply leaves the original mapping fully operational.
+    # apply() alone, for every engine: engines/forwarders are required to
+    # make "apply" a full idempotent reconcile for a given mapping id
+    # (ensure mapping <id> looks exactly like this), the same discipline
+    # engines/gre.sh already holds itself to. A separate "remove the old
+    # one" call is deliberately NOT made here: old and new share the same
+    # mapping id, so for an identity-addressed/regenerating engine
+    # (HAProxy, which rebuilds its whole managed block keyed by mapping
+    # id) a trailing remove-by-id would undo the apply that just
+    # succeeded. netfilter's apply() independently wipes this mapping's
+    # previously-applied rules before re-adding the new set, so the two
+    # engines behave consistently here despite their different internal
+    # mechanics.
     tx::begin "forwarding-${id}" 10 || return $?
     local status=0
     tx::apply forwarder::dispatch "$engine" apply "$tunnel_json" "$new_mapping" 0 || status=$?
     if [[ "$status" -ne 0 ]]; then
-        tx::rollback forwarder::dispatch "$engine" remove "$tunnel_json" "$new_mapping" 0
+        # Restore the OLD mapping's rules/config: apply() is a full
+        # reconcile, so re-applying the old mapping repairs whatever
+        # partial state the failed attempt left behind.
+        tx::rollback forwarder::dispatch "$engine" apply "$tunnel_json" "$old_mapping" 0
         return "$EXIT_ROLLED_BACK"
     fi
-
-    tx::apply forwarder::dispatch "$engine" remove "$tunnel_json" "$old_mapping" 0 || true
 
     local new_tunnel_json
     new_tunnel_json="$(jq -c --arg mid "$mapping_id" --argjson m "$new_mapping" \
         '.forwarding.mappings |= map(if .id == $mid then $m else . end)' <<<"$tunnel_json")"
-    tx::apply config::tunnel_write "$id" "$new_tunnel_json" || { tx::rollback; return "$EXIT_ROLLED_BACK"; }
+    tx::apply config::tunnel_write "$id" "$new_tunnel_json" || {
+        tx::rollback forwarder::dispatch "$engine" apply "$tunnel_json" "$old_mapping" 0
+        return "$EXIT_ROLLED_BACK"
+    }
+
+    if [[ "$engine" != "none" ]] && ! tx::is_dry_run; then
+        local verify_state
+        verify_state="$(forwarder::dispatch "$engine" status "$new_tunnel_json" "$new_mapping" 2>/dev/null | awk -F= '/^STATE=/{print substr($0,7)}')"
+        if [[ "$verify_state" != "ACTIVE" ]]; then
+            log::error "mapping $mapping_id did not verify ACTIVE after edit (state: $verify_state)"
+            tx::rollback forwarder::dispatch "$engine" apply "$tunnel_json" "$old_mapping" 0
+            return "$EXIT_ROLLED_BACK"
+        fi
+    fi
 
     tx::commit
     log::history "forward-edit" "$id" "success"

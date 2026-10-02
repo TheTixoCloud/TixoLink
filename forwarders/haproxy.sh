@@ -302,15 +302,107 @@ forwarder_haproxy_validate() {
     return 0
 }
 
+# haproxy::_addrs_overlap <addr-a> <addr-b>
+# "0.0.0.0" or "*" cover every address, so they overlap with anything;
+# two specific addresses only overlap if identical.
+haproxy::_addrs_overlap() {
+    local a="$1" b="$2"
+    [[ "$a" == "0.0.0.0" || "$a" == "*" || "$b" == "0.0.0.0" || "$b" == "*" || "$a" == "$b" ]]
+}
+
+# haproxy::_bind_in_base_config <listen-addr> <port>
+# Scans the administrator's own config (everything outside TixoLink's
+# managed block) for a `bind` directive that would collide with the
+# given address:port. Deliberately conservative: any base-config bind
+# whose address overlaps ours on the same port counts as occupied.
+haproxy::_bind_in_base_config() {
+    local addr="$1" port="$2" base line bind_spec bind_addr bind_port
+    base="$(haproxy::_base_content)"
+    while IFS= read -r line; do
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" =~ ^[[:space:]]*bind[[:space:]]+([^[:space:]]+) ]] || continue
+        bind_spec="${BASH_REMATCH[1]}"
+        bind_port="${bind_spec##*:}"
+        bind_addr="${bind_spec%:*}"
+        [[ "$bind_addr" == "$bind_spec" ]] && bind_addr="0.0.0.0"  # "bind :PORT" form
+        if [[ "$bind_port" == "$port" ]] && haproxy::_addrs_overlap "$bind_addr" "$addr"; then
+            return 0
+        fi
+    done <<<"$base"
+    return 1
+}
+
+# haproxy::_bind_occupied_by_other_process <listen-addr> <port>
+# Prints one of: free, process (something is listening and it is not
+# explained by our own base config or TixoLink mappings), unknown (ss is
+# unavailable or its output could not be parsed - NEVER reported as
+# free). Address-level nuance is intentionally not attempted here: if
+# `ss` shows anything LISTENing on this exact TCP port, treat it as
+# occupied regardless of which local address it bound, since a listener
+# bound to 0.0.0.0 would prevent our own bind on our own address anyway
+# and we have no reliable portable way to resolve the reverse case
+# without more privilege than this check needs.
+haproxy::_bind_occupied_by_other_process() {
+    local port="$2"
+    command -v ss >/dev/null 2>&1 || { printf 'unknown'; return 0; }
+    local out
+    # Must inspect the same network namespace the tunnel (and its
+    # HAProxy process) actually runs in - the host's default namespace
+    # has a completely independent socket table, so checking it while
+    # TIXOLINK_NETNS is set would silently check the wrong place.
+    if [[ -n "${TIXOLINK_NETNS:-}" ]]; then
+        out="$(ip netns exec "$TIXOLINK_NETNS" ss -ltn 2>/dev/null)" || { printf 'unknown'; return 0; }
+    else
+        out="$(ss -ltn 2>/dev/null)" || { printf 'unknown'; return 0; }
+    fi
+    if grep -qE "[.:]${port}[[:space:]]" <<<"$out"; then
+        printf 'process'
+    else
+        printf 'free'
+    fi
+}
+
 # forwarder_haproxy_check_conflicts <tunnel-id> <mapping-json> [exclude-mapping-id]
-# Detects bind conflicts: another TixoLink haproxy mapping already using
-# the same listen_address:port, distinguished from "owned by us" via the
-# excluded mapping id during edits.
+# Preflight bind-safety check. Distinguishes, in order:
+#   1. free                                - proceeds
+#   2. existing TixoLink-owned bind         - conflict, unless it's this
+#                                              exact mapping being edited
+#   3. already represented in the admin's   - conflict (never steal an
+#      own (base) HAProxy configuration        administrator-owned bind)
+#   4. occupied by another local process    - conflict (never steal it)
+#   5. unable to determine safely (ss        - conflict, fails CLOSED:
+#      missing or unparsable)                  "unable to determine" is
+#                                                never treated as free
 forwarder_haproxy_check_conflicts() {
     local self_tunnel_id="$1" mapping="$2" exclude_mapping_id="${3:-}"
     local listen_addr local_port
     listen_addr="$(jq -r '.listen_address' <<<"$mapping")"
     local_port="$(jq -r '.local_port' <<<"$mapping")"
+
+    # If this is an edit of an existing mapping, and the candidate
+    # address:port is EXACTLY what that mapping already legitimately
+    # binds today, the upcoming apply isn't actually acquiring a new
+    # bind - skip the base-config/process checks for this specific
+    # address:port so a no-op-for-the-bind edit (e.g. only remote_port
+    # or nat_mode changed) isn't rejected for "conflicting" with its own
+    # already-running listener.
+    local self_already_binds=0
+    if [[ -n "$exclude_mapping_id" ]]; then
+        local self_tunnel_json self_old_mapping self_old_addr self_old_port
+        self_tunnel_json="$(config::tunnel_read "$self_tunnel_id" 2>/dev/null)" || self_tunnel_json=""
+        if [[ -n "$self_tunnel_json" ]]; then
+            # Looked up inline (not via modules/forwarding.sh) so this
+            # engine file stays self-contained and doesn't depend on the
+            # orchestration layer that sits above it.
+            self_old_mapping="$(jq -c --arg mid "$exclude_mapping_id" \
+                '.forwarding.mappings[]? | select(.id == $mid)' <<<"$self_tunnel_json" 2>/dev/null)" || self_old_mapping=""
+            if [[ -n "$self_old_mapping" ]]; then
+                self_old_addr="$(jq -r '.listen_address' <<<"$self_old_mapping")"
+                self_old_port="$(jq -r '.local_port' <<<"$self_old_mapping")"
+                [[ "$self_old_addr" == "$listen_addr" && "$self_old_port" == "$local_port" ]] && self_already_binds=1
+            fi
+        fi
+    fi
 
     local other_id other_json other_engine m other_mid other_listen other_port
     while IFS= read -r other_id; do
@@ -331,13 +423,27 @@ forwarder_haproxy_check_conflicts() {
         done < <(jq -c '.forwarding.mappings[]?' <<<"$other_json")
     done < <(config::tunnel_list)
 
-    # Bind conflict against something NOT TixoLink-managed (another
-    # process already listening) - detected read-only, never assumed away.
-    if command -v ss >/dev/null 2>&1; then
-        if ss -ltn "( sport = :$local_port )" 2>/dev/null | grep -q ":$local_port"; then
-            log::warn "port $local_port appears to already have a listener on this host outside TixoLink's knowledge"
-        fi
+    [[ "$self_already_binds" == "1" ]] && return 0
+
+    if haproxy::_bind_in_base_config "$listen_addr" "$local_port"; then
+        log::error "listen address:port ${listen_addr}:${local_port} is already bound in the administrator's own HAProxy configuration"
+        return "$EXIT_CONFLICT"
     fi
+
+    local process_status
+    process_status="$(haproxy::_bind_occupied_by_other_process "$listen_addr" "$local_port")"
+    case "$process_status" in
+        free) : ;;
+        process)
+            log::error "port ${local_port} is already occupied by another process on this host; refusing to bind it"
+            return "$EXIT_CONFLICT"
+            ;;
+        *)
+            log::error "unable to safely determine whether port ${local_port} is free (ss unavailable or unparsable); refusing to proceed"
+            return "$EXIT_CONFLICT"
+            ;;
+    esac
+
     return 0
 }
 
