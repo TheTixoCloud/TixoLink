@@ -1,0 +1,26 @@
+[Unit]
+Description=TixoLink NEXUS tunnel %i
+Documentation=https://github.com/TheTixoCloud/TixoLink
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# %i is only ever the tunnel's immutable ID. All other attributes (peer
+# IPs, interface name, MTU, inner addresses) are read from
+# /etc/tixolink/tunnels/%i.json at the moment each verb runs - nothing
+# about this tunnel is ever embedded in this unit file or in a generated
+# per-tunnel helper script. Editing the tunnel's config therefore takes
+# effect on the next start/reload with no regeneration step and no risk
+# of a stale IP surviving an edit.
+ExecStart=/usr/local/bin/tixolink tunnel-up %i
+ExecStop=/usr/local/bin/tixolink tunnel-down %i
+ExecReload=/usr/local/bin/tixolink tunnel-reload %i
+TimeoutStartSec=30
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

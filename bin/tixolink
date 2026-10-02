@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# TixoLink NEXUS launcher.
+#
+# Resolves its own location to find the library directory, in both the
+# development checkout layout (bin/ and lib/ as siblings) and the installed
+# layout (/usr/local/bin/tixolink, /usr/local/lib/tixolink/), then dispatches
+# to lib/cli.sh. This file stays a thin bootstrap so lib/cli.sh can be
+# sourced and tested independently of a full program run.
+
+set -Eeuo pipefail
+
+tixolink::resolve_self_dir() {
+    local src="${BASH_SOURCE[0]}"
+    local dir
+    while [[ -h "$src" ]]; do
+        dir="$(cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd)"
+        src="$(readlink "$src")"
+        [[ "$src" != /* ]] && src="$dir/$src"
+    done
+    cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd
+}
+
+# tixolink::resolve_sibling_dir <override-var-name> <installed-path> <dev-subdir>
+# Resolves a directory that sits alongside bin/ in a development checkout,
+# or at a fixed path when installed. Used identically for lib/, engines/,
+# and modules/ so all three follow the same dev-vs-installed rule.
+tixolink::resolve_sibling_dir() {
+    local override="${!1:-}"
+    if [[ -n "$override" ]]; then
+        printf '%s' "$override"
+    elif [[ "$TIXOLINK_BIN_DIR" == "/usr/local/bin" ]]; then
+        printf '%s' "$2"
+    else
+        printf '%s/%s' "$(cd -P "$TIXOLINK_BIN_DIR/.." && pwd)" "$3"
+    fi
+}
+
+TIXOLINK_BIN_DIR="$(tixolink::resolve_self_dir)"
+readonly TIXOLINK_BIN_DIR
+
+TIXOLINK_LIB_DIR="$(tixolink::resolve_sibling_dir TIXOLINK_LIB_DIR /usr/local/lib/tixolink lib)"
+readonly TIXOLINK_LIB_DIR
+TIXOLINK_ENGINES_DIR="$(tixolink::resolve_sibling_dir TIXOLINK_ENGINES_DIR /usr/local/lib/tixolink/engines engines)"
+readonly TIXOLINK_ENGINES_DIR
+TIXOLINK_MODULES_DIR="$(tixolink::resolve_sibling_dir TIXOLINK_MODULES_DIR /usr/local/lib/tixolink/modules modules)"
+readonly TIXOLINK_MODULES_DIR
+TIXOLINK_FORWARDERS_DIR="$(tixolink::resolve_sibling_dir TIXOLINK_FORWARDERS_DIR /usr/local/lib/tixolink/forwarders forwarders)"
+readonly TIXOLINK_FORWARDERS_DIR
+export TIXOLINK_LIB_DIR TIXOLINK_BIN_DIR TIXOLINK_ENGINES_DIR TIXOLINK_MODULES_DIR TIXOLINK_FORWARDERS_DIR
+
+# shellcheck source=lib/common.sh
+source "$TIXOLINK_LIB_DIR/common.sh"
+# shellcheck source=lib/logging.sh
+source "$TIXOLINK_LIB_DIR/logging.sh"
+# shellcheck source=lib/ui.sh
+source "$TIXOLINK_LIB_DIR/ui.sh"
+# shellcheck source=lib/validation.sh
+source "$TIXOLINK_LIB_DIR/validation.sh"
+# shellcheck source=lib/platform.sh
+source "$TIXOLINK_LIB_DIR/platform.sh"
+# shellcheck source=lib/locking.sh
+source "$TIXOLINK_LIB_DIR/locking.sh"
+# shellcheck source=lib/config.sh
+source "$TIXOLINK_LIB_DIR/config.sh"
+# shellcheck source=lib/state.sh
+source "$TIXOLINK_LIB_DIR/state.sh"
+# shellcheck source=lib/subnet.sh
+source "$TIXOLINK_LIB_DIR/subnet.sh"
+# shellcheck source=lib/ports.sh
+source "$TIXOLINK_LIB_DIR/ports.sh"
+# shellcheck source=lib/dependency.sh
+source "$TIXOLINK_LIB_DIR/dependency.sh"
+# shellcheck source=lib/transaction.sh
+source "$TIXOLINK_LIB_DIR/transaction.sh"
+# shellcheck source=engines/engine_api.sh
+source "$TIXOLINK_ENGINES_DIR/engine_api.sh"
+# shellcheck source=engines/gre.sh
+source "$TIXOLINK_ENGINES_DIR/gre.sh"
+# shellcheck source=forwarders/forwarder_api.sh
+source "$TIXOLINK_FORWARDERS_DIR/forwarder_api.sh"
+# shellcheck source=forwarders/none.sh
+source "$TIXOLINK_FORWARDERS_DIR/none.sh"
+# shellcheck source=forwarders/netfilter.sh
+source "$TIXOLINK_FORWARDERS_DIR/netfilter.sh"
+# shellcheck source=forwarders/haproxy.sh
+source "$TIXOLINK_FORWARDERS_DIR/haproxy.sh"
+# shellcheck source=modules/tunnel.sh
+source "$TIXOLINK_MODULES_DIR/tunnel.sh"
+# shellcheck source=modules/peer.sh
+source "$TIXOLINK_MODULES_DIR/peer.sh"
+# shellcheck source=modules/forwarding.sh
+source "$TIXOLINK_MODULES_DIR/forwarding.sh"
+# shellcheck source=lib/menu.sh
+source "$TIXOLINK_LIB_DIR/menu.sh"
+# shellcheck source=lib/cli.sh
+source "$TIXOLINK_LIB_DIR/cli.sh"
+
+cli::main "$@"
