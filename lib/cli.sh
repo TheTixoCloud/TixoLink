@@ -38,6 +38,21 @@ Commands:
   forward remove <tunnel> <mapping-id>
   forward status <tunnel>
   forward migrate <tunnel> <none|netfilter|haproxy>
+  diagnostics                  System diagnostics (read-only)
+  diagnostics system            Same as above
+  diagnostics tunnel <id>       Tunnel config/runtime/reachability/forwarding diagnostics
+  diagnostics report [--privacy]  Generate a redacted support-report archive
+  benchmark <id> [--count N] [--throughput server-ip]  Latency/loss, optional throughput
+  monitor <id> [interval_s]    Live rate dashboard (Ctrl+C to exit)
+  optimize status              Show currently-applied tunables (read-only)
+  optimize recommend <profile>  Show current->proposed plan for a profile (read-only)
+  optimize apply <profile>     Apply a profile (requires --force)
+  optimize restore [key]       Restore TixoLink-managed tunable(s) to baseline
+  bbr status                   Show congestion-control status (read-only)
+  bbr enable                   Enable BBR (requires --force)
+  bbr disable / bbr restore    Undo TixoLink's BBR change, back to baseline
+
+Profiles: balanced, high_connection_count, high_throughput
 
 Flags (where applicable):
   --dry-run                    Show planned actions without applying them
@@ -50,8 +65,7 @@ Flags (where applicable):
 Running "tixolink" with no command launches the interactive menu when
 connected to a terminal.
 
-Note: diagnostics, optimizer, and lifecycle (install/update/backup)
-commands are not implemented yet (Phase 4: transport + forwarding).
+Note: lifecycle (install/update/backup) commands are not implemented yet.
 EOF
 }
 
@@ -160,6 +174,114 @@ cli::cmd_forward() {
             return "$EXIT_USAGE"
             ;;
     esac
+}
+
+cli::cmd_diagnostics() {
+    local sub="${1:-system}"
+    case "$sub" in
+        system)
+            diagnostics::system | jq .
+            ;;
+        tunnel)
+            local ref="${2:-}"
+            [[ -z "$ref" ]] && { ui::error "diagnostics tunnel requires a tunnel id or name"; return "$EXIT_USAGE"; }
+            diagnostics::tunnel "$ref"
+            ;;
+        report)
+            local privacy=""
+            [[ "${2:-}" == "--privacy" ]] && privacy="--privacy"
+            local report; report="$(diagnostics::generate_report $privacy)"
+            ui::success "Support report written to: $report"
+            ui::info "Inspect it with: tar tzf '$report'"
+            ;;
+        *)
+            ui::error "unknown diagnostics subcommand: $sub"
+            return "$EXIT_USAGE"
+            ;;
+    esac
+}
+
+cli::cmd_benchmark() {
+    local ref="$1" count="${2:-3}" throughput_server="${3:-}"
+    local id; id="$(tunnel::resolve "$ref")" || return $?
+    local cfg; cfg="$(config::tunnel_read "$id")" || return "$EXIT_NOT_FOUND"
+    local remote_public inner_remote
+    remote_public="$(jq -r '.engine_config.remote_public_ip' <<<"$cfg")"
+    inner_remote="$(jq -r '.engine_config.inner_remote_ip' <<<"$cfg")"
+
+    ui::section "Latency / loss benchmark: $ref"
+    printf 'Public peer (%s):\n' "$remote_public"
+    benchmark::latency "$remote_public" "$count" 2 | jq .
+    printf 'Inner peer (%s):\n' "$inner_remote"
+    benchmark::latency "$inner_remote" "$count" 2 | jq .
+
+    if [[ -n "$throughput_server" ]]; then
+        ui::section "Throughput benchmark (iperf3, explicit target: $throughput_server)"
+        benchmark::throughput "$throughput_server" | jq .
+    fi
+    return 0
+}
+
+cli::cmd_optimize() {
+    local sub="$1" force="$2" dry_run="$3"
+    shift 3
+    case "$sub" in
+        status)
+            optimizer::status
+            ;;
+        recommend)
+            local profile="${1:-}"
+            [[ -z "$profile" ]] && { ui::error "optimize recommend requires a profile"; return "$EXIT_USAGE"; }
+            optimizer::plan "$profile" | jq .
+            ;;
+        apply)
+            local profile="${1:-}"
+            [[ -z "$profile" ]] && { ui::error "optimize apply requires a profile"; return "$EXIT_USAGE"; }
+            if [[ "$dry_run" != "1" && "$force" != "1" ]]; then
+                ui::warning "This would mutate host sysctls. Re-run with --dry-run to preview, or --force to apply."
+                return "$EXIT_USAGE"
+            fi
+            optimizer::apply_profile "$profile" "$dry_run"
+            ;;
+        restore)
+            optimizer::restore "${1:-}"
+            ;;
+        *)
+            ui::error "unknown optimize subcommand: $sub"
+            return "$EXIT_USAGE"
+            ;;
+    esac
+}
+
+cli::cmd_bbr() {
+    local sub="$1" force="$2" dry_run="$3"
+    case "$sub" in
+        status)
+            bbr::status
+            ;;
+        enable)
+            if [[ "$dry_run" != "1" && "$force" != "1" ]]; then
+                ui::warning "This would mutate the host's TCP congestion control. Re-run with --dry-run to preview, or --force to apply."
+                return "$EXIT_USAGE"
+            fi
+            bbr::enable "$dry_run"
+            ;;
+        disable) bbr::disable ;;
+        restore) bbr::restore ;;
+        *)
+            ui::error "unknown bbr subcommand: $sub"
+            return "$EXIT_USAGE"
+            ;;
+    esac
+}
+
+cli::cmd_monitor() {
+    local ref="$1" interval="${2:-2}"
+    if [[ ! -t 0 || ! -t 1 ]]; then
+        ui::error "monitor requires an interactive terminal"
+        return "$EXIT_USAGE"
+    fi
+    monitor::run "$ref" "$interval"
 }
 
 cli::cmd_peer() {
@@ -281,6 +403,21 @@ cli::main() {
             ;;
         forward)
             cli::cmd_forward "$dry_run" "${positional[@]}" || status=$?
+            ;;
+        diagnostics)
+            cli::cmd_diagnostics "${positional[@]}" || status=$?
+            ;;
+        benchmark)
+            cli::cmd_benchmark "${positional[@]}" || status=$?
+            ;;
+        monitor)
+            cli::cmd_monitor "${positional[@]}" || status=$?
+            ;;
+        optimize)
+            cli::cmd_optimize "${positional[0]:-}" "$force" "$dry_run" "${positional[@]:1}" || status=$?
+            ;;
+        bbr)
+            cli::cmd_bbr "${positional[0]:-}" "$force" "$dry_run" || status=$?
             ;;
         *)
             ui::error "unknown command: $command"

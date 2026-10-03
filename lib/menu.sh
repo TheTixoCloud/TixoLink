@@ -294,6 +294,200 @@ menu::_port_forwarding_select_tunnel() {
     menu::_port_forwarding "$ref"
 }
 
+# --- Diagnostics ----------------------------------------------------------------
+# Opening any of these screens performs zero mutation.
+
+menu::_diagnostics_system() {
+    ui::section "System Diagnostics (read-only)"
+    diagnostics::system | jq .
+}
+
+menu::_diagnostics_tunnel() {
+    menu::_print_tunnel_list || return
+    local ref; ref="$(ui::input "Enter tunnel ID or name (blank to go back)")"
+    [[ -z "$ref" ]] && return
+    local id; id="$(tunnel::resolve "$ref")" || { ui::error "Tunnel not found: $ref"; return; }
+    ui::section "Tunnel Diagnostics: $ref"
+    local line
+    while IFS= read -r line; do
+        [[ "$line" == *_HEALTH=FAIL* ]] && { ui::error "$line"; continue; }
+        [[ "$line" == *_HEALTH=WARN* ]] && { ui::warning "$line"; continue; }
+        printf '%s\n' "$line"
+    done < <(diagnostics::tunnel "$id")
+}
+
+menu::_diagnostics_report() {
+    local privacy=""
+    ui::confirm "Redact public/inner IP addresses (privacy mode)?" "n" && privacy="--privacy"
+    local report; report="$(diagnostics::generate_report $privacy)"
+    ui::success "Support report written to: $report"
+}
+
+menu::_diagnostics() {
+    while true; do
+        ui::section "Diagnostics"
+        local -a labels=("System Diagnostics" "Tunnel Diagnostics" "Generate Support Report" "Back")
+        local choice
+        choice="$(ui::select "Select" "${labels[@]}")" || return
+        case "$choice" in
+            1) menu::_diagnostics_system ;;
+            2) menu::_diagnostics_tunnel ;;
+            3) menu::_diagnostics_report ;;
+            4) return ;;
+        esac
+    done
+}
+
+# --- Benchmark (explicit action; may generate traffic) ------------------------
+
+menu::_benchmark() {
+    menu::_print_tunnel_list || return
+    local ref; ref="$(ui::input "Enter tunnel ID or name (blank to go back)")"
+    [[ -z "$ref" ]] && return
+    local id; id="$(tunnel::resolve "$ref")" || { ui::error "Tunnel not found: $ref"; return; }
+
+    ui::section "Latency / Loss Benchmark"
+    if ui::confirm "Run a latency/loss benchmark now (sends a small number of pings)?" "y"; then
+        cli::cmd_benchmark "$id" 5
+    fi
+
+    if ui::confirm "Also run a THROUGHPUT benchmark? This generates sustained traffic and requires an iperf3 server you control." "n"; then
+        local server; server="$(ui::input "iperf3 server IP (must already be running one)")"
+        if validate::ipv4 "$server" 2>/dev/null; then
+            benchmark::throughput "$server" | jq .
+        else
+            ui::error "Invalid IPv4 address."
+        fi
+    fi
+}
+
+# --- Live Monitor ---------------------------------------------------------------
+
+menu::_monitor() {
+    menu::_print_tunnel_list || return
+    local ref; ref="$(ui::input "Enter tunnel ID or name (blank to go back)")"
+    [[ -z "$ref" ]] && return
+    monitor::run "$ref" 2
+}
+
+# --- Network Optimizer ----------------------------------------------------------
+# Opening this screen performs zero mutation; only "Apply a Profile"
+# writes anything, and only after the review+confirm step below.
+
+menu::_optimizer_status() {
+    ui::section "Optimizer Status (read-only)"
+    optimizer::status
+}
+
+menu::_optimizer_apply() {
+    local -a profiles=("balanced" "high_connection_count" "high_throughput" "Back")
+    local choice; choice="$(ui::select "Select a profile" "${profiles[@]}")" || return
+    [[ "$choice" == "4" ]] && return
+    local profile="${profiles[$((choice-1))]}"
+
+    ui::section "Plan: $profile"
+    local plan; plan="$(optimizer::plan "$profile")"
+    local entry any_change=0
+    while IFS= read -r entry; do
+        [[ -z "$entry" ]] && continue
+        printf -- '----------------------------------------\n'
+        printf 'Tunable:      %s\n' "$(jq -r '.key' <<<"$entry")"
+        printf 'Description:  %s\n' "$(jq -r '.description' <<<"$entry")"
+        printf 'Rationale:    %s\n' "$(jq -r '.rationale' <<<"$entry")"
+        printf 'Downside:     %s\n' "$(jq -r '.downside' <<<"$entry")"
+        printf 'Reboot req.:  %s\n' "$(jq -r '.reboot_required' <<<"$entry")"
+        printf 'Current:      %s\n' "$(jq -r '.current' <<<"$entry")"
+        printf 'Proposed:     %s\n' "$(jq -r '.proposed' <<<"$entry")"
+        [[ "$(jq -r '.changed' <<<"$entry")" == "true" ]] && any_change=1
+    done <<<"$plan"
+    printf -- '----------------------------------------\n'
+
+    if [[ "$any_change" == "0" ]]; then
+        ui::info "Nothing to change; current configuration already matches this profile."
+        return
+    fi
+
+    local run_before=0
+    local tunnel_ref="" before_snapshot=""
+    if ui::confirm "Run a benchmark BEFORE applying, to compare afterward? (optional)" "n"; then
+        menu::_print_tunnel_list && tunnel_ref="$(ui::input "Tunnel to benchmark")"
+        if [[ -n "$tunnel_ref" ]]; then
+            local tid; tid="$(tunnel::resolve "$tunnel_ref" 2>/dev/null)"
+            if [[ -n "$tid" ]]; then
+                local pub_ip; pub_ip="$(jq -r '.engine_config.remote_public_ip' <<<"$(config::tunnel_read "$tid")")"
+                local inner_ip; inner_ip="$(jq -r '.engine_config.inner_remote_ip' <<<"$(config::tunnel_read "$tid")")"
+                before_snapshot="$(benchmark::snapshot "$tid" "$(benchmark::latency "$pub_ip" 3 2)" "$(benchmark::latency "$inner_ip" 3 2)" null)"
+                run_before=1
+            fi
+        fi
+    fi
+
+    ui::confirm "Apply profile '$profile' now?" "n" || { ui::info "Cancelled."; return; }
+
+    optimizer::apply_profile "$profile" 0
+    local status=$?
+    if [[ "$status" -ne 0 ]]; then
+        ui::error "Apply failed (exit $status); any changes from this run were rolled back."
+        return
+    fi
+    ui::success "Profile '$profile' applied and verified."
+
+    if [[ "$run_before" == "1" ]]; then
+        local tid; tid="$(tunnel::resolve "$tunnel_ref" 2>/dev/null)"
+        local pub_ip; pub_ip="$(jq -r '.engine_config.remote_public_ip' <<<"$(config::tunnel_read "$tid")")"
+        local inner_ip; inner_ip="$(jq -r '.engine_config.inner_remote_ip' <<<"$(config::tunnel_read "$tid")")"
+        local after_snapshot; after_snapshot="$(benchmark::snapshot "$tid" "$(benchmark::latency "$pub_ip" 3 2)" "$(benchmark::latency "$inner_ip" 3 2)" null)"
+        ui::section "Before / After"
+        benchmark::compare "$before_snapshot" "$after_snapshot"
+    fi
+}
+
+menu::_optimizer_restore() {
+    optimizer::restore
+    local status=$?
+    if [[ "$status" -eq 0 ]]; then
+        ui::success "Restored TixoLink-managed tunables to their original baseline."
+    else
+        ui::error "Restore failed (exit $status)."
+    fi
+}
+
+menu::_bbr() {
+    while true; do
+        ui::section "BBR Manager"
+        bbr::status
+        local -a labels=("Enable BBR" "Disable / Restore" "Back")
+        local choice; choice="$(ui::select "Select" "${labels[@]}")" || return
+        case "$choice" in
+            1)
+                ui::confirm "Enable BBR congestion control now?" "n" || { ui::info "Cancelled."; continue; }
+                if bbr::enable 0; then ui::success "BBR enabled."; else ui::error "Enable failed."; fi
+                ;;
+            2)
+                ui::confirm "Restore congestion control to its original (pre-TixoLink) value?" "n" || { ui::info "Cancelled."; continue; }
+                if bbr::restore; then ui::success "Restored."; else ui::error "Restore failed (nothing to restore, or an error occurred)."; fi
+                ;;
+            3) return ;;
+        esac
+    done
+}
+
+menu::_optimizer() {
+    while true; do
+        ui::section "Network Optimizer"
+        local -a labels=("Status" "Apply a Profile" "Restore Baseline" "BBR Manager" "Back")
+        local choice
+        choice="$(ui::select "Select" "${labels[@]}")" || return
+        case "$choice" in
+            1) menu::_optimizer_status ;;
+            2) menu::_optimizer_apply ;;
+            3) menu::_optimizer_restore ;;
+            4) menu::_bbr ;;
+            5) return ;;
+        esac
+    done
+}
+
 # --- Manage Tunnels -----------------------------------------------------------
 
 menu::_print_tunnel_list() {
@@ -378,6 +572,10 @@ menu::main() {
             1) menu::wizard_create_tunnel ;;
             2) menu::_manage_tunnels ;;
             3) menu::_port_forwarding_select_tunnel ;;
+            4) menu::_monitor ;;
+            5) menu::_diagnostics ;;
+            6) menu::_benchmark ;;
+            7) menu::_optimizer ;;
             11) menu::_about ;;
             12) return "$EXIT_OK" ;;
             *) menu::_not_implemented ;;

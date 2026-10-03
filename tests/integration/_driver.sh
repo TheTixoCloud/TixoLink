@@ -43,6 +43,8 @@ source "$TIXOLINK_LIB_DIR/ports.sh"
 source "$TIXOLINK_LIB_DIR/dependency.sh"
 # shellcheck source=lib/transaction.sh
 source "$TIXOLINK_LIB_DIR/transaction.sh"
+# shellcheck source=lib/sysinfo.sh
+source "$TIXOLINK_LIB_DIR/sysinfo.sh"
 # shellcheck source=engines/engine_api.sh
 source "$TIXOLINK_ENGINES_DIR/engine_api.sh"
 # shellcheck source=engines/gre.sh
@@ -61,6 +63,16 @@ source "$TIXOLINK_MODULES_DIR/tunnel.sh"
 source "$TIXOLINK_MODULES_DIR/peer.sh"
 # shellcheck source=modules/forwarding.sh
 source "$TIXOLINK_MODULES_DIR/forwarding.sh"
+# shellcheck source=modules/diagnostics.sh
+source "$TIXOLINK_MODULES_DIR/diagnostics.sh"
+# shellcheck source=modules/benchmark.sh
+source "$TIXOLINK_MODULES_DIR/benchmark.sh"
+# shellcheck source=modules/optimizer.sh
+source "$TIXOLINK_MODULES_DIR/optimizer.sh"
+# shellcheck source=modules/bbr.sh
+source "$TIXOLINK_MODULES_DIR/bbr.sh"
+# shellcheck source=modules/monitor.sh
+source "$TIXOLINK_MODULES_DIR/monitor.sh"
 
 # Test-only seam: lets a specific test substitute a handful of functions
 # (e.g. haproxy::_reload/_is_active, to drive a throwaway process instead
