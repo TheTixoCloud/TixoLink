@@ -116,6 +116,15 @@ test_expand_spec_rejects_empty() {
     th::assert_eq "$status" "$EXIT_VALIDATION"
 }
 
+# `read` stops at the first newline regardless of IFS - an embedded
+# newline must be rejected outright, never silently truncated into
+# "expand only the part before it, report success anyway."
+test_expand_spec_rejects_embedded_newline() {
+    local status=0
+    ports::expand_spec $'80,443\nDROP TABLE' >/dev/null 2>&1 || status=$?
+    th::assert_eq "$status" "$EXIT_VALIDATION"
+}
+
 test_mapping_conflicts_same_protocol_overlap() {
     ports::mapping_conflicts_with "80" "tcp" "80" "tcp"
 }
@@ -158,6 +167,7 @@ th::run test_expand_spec_rejects_duplicate_ports
 th::run test_expand_spec_rejects_overlapping_ranges
 th::run test_expand_spec_rejects_one_bad_token_in_list
 th::run test_expand_spec_rejects_empty
+th::run test_expand_spec_rejects_embedded_newline
 th::run test_mapping_conflicts_same_protocol_overlap
 th::run test_mapping_conflicts_tcp_udp_do_not_conflict
 th::run test_mapping_conflicts_tcp_udp_combo_conflicts_with_either

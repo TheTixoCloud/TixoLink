@@ -119,10 +119,11 @@ terminating the test process.
 
 ## Known limitations
 
-- `tixolink create`/`tixolink edit` require an interactive TTY; there is
-  no flag-driven non-interactive tunnel create/edit yet. See
-  [docs/troubleshooting.md](troubleshooting.md) for the concrete plan and
-  why it's deferred rather than squeezed into Phase 6.
+- `tixolink create`/`tixolink edit` support both an interactive wizard
+  (unchanged) and a flag-driven non-interactive path (added in Phase 7)
+  calling the exact same `tunnel::create_from_fields`/
+  `tunnel::edit_from_fields` functions the wizard always called. See
+  [docs/troubleshooting.md](troubleshooting.md) for the flag reference.
 - The updater's integrity check (SHA256 against a published checksum
   manifest) does not authenticate the release channel itself; see
   [docs/lifecycle.md](lifecycle.md)'s trust-model section.

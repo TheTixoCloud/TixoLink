@@ -33,47 +33,37 @@ An aggregate rolls up as `FAIL` > `WARN` > `UNKNOWN` > `PASS`, but every
 individual observation is still printed — the aggregate never hides a
 specific failing check.
 
-## Known limitation: `tixolink create`/`tixolink edit` require a TTY
+## Non-interactive `tixolink create`/`tixolink edit` (resolved in Phase 7)
 
-Both commands are interactive wizards (`lib/menu.sh:menu::wizard_create_tunnel`/
-`menu::wizard_edit_tunnel`) and refuse to run without one
-(`cli::main` returns `EXIT_USAGE` for `create`/`edit` outside a TTY).
-This was an accepted Phase 3 scope boundary, not an oversight, but it
-blocks fully-scripted provisioning.
+Through Phase 6, both commands were wizard-only
+(`lib/menu.sh:menu::wizard_create_tunnel`/`menu::wizard_edit_tunnel`) and
+refused to run without a TTY. As of Phase 7, `cli::cmd_create`/
+`cli::cmd_edit` (`lib/cli.sh`) add a flag-driven path that calls the exact
+same `tunnel::create_from_fields`/`tunnel::edit_from_fields` validation
+and transaction functions the wizard always called — no business logic
+was duplicated.
 
-**Concrete plan for flag-driven non-interactive create/edit** (deferred to
-the Phase 7 CLI-completeness audit rather than squeezed into Phase 6,
-since Phase 6 is lifecycle-scoped and this is unrelated surface area):
-
-1. Add `tunnel::create_from_fields`/`tunnel::edit_from_fields` callers
-   directly to `lib/cli.sh`'s `create`/`edit` branches when `! -t 0`,
-   parsing the same fields the wizard collects (`--name`, `--local-ip`,
-   `--remote-ip`, `--mtu`, `--ttl`, `--subnet`/`--inner-local`/
-   `--inner-remote` for manual addressing, defaulting to automatic
-   allocation otherwise) instead of calling `menu::wizard_*`. Both
-   `tunnel::create_from_fields` and `tunnel::edit_from_fields` already
-   exist and already do all real validation/transaction work — the
-   wizard is a thin interactive collector in front of them, so this is
-   additive, not a rewrite.
-2. Add the equivalent flags to `cli::cmd_forward add`/`edit` are already
-   fully flag-driven today (no TTY requirement) — only tunnel create/edit
-   lack this, since those two commands currently only expose the wizard
-   path.
-3. Reuse `lib/validation.sh`'s existing pure validators for every new
-   flag; no new validation logic needed.
-4. Required test additions: `tests/unit/test_cli.sh` cases for each new
-   flag combination (missing required flag, invalid value per
-   validator, successful non-interactive create matching the wizard's
-   own output for equivalent input) and one integration test
-   (`tests/integration/test_gre_netns.sh` already covers the
-   `tunnel::create_from_fields` path directly — extend it to also invoke
-   through `cli::main` non-interactively instead of only calling the
-   module function, to catch any CLI-layer regression).
-5. Estimated size: small (the module-layer functions already exist and
-   are already tested; this is argument parsing plus flag documentation
-   in `cli::usage` and new CLI-layer tests) — hence "small, safe, and
-   well-tested" per the Phase 6 instructions would normally argue for
-   doing it now. It is deferred anyway because Phase 6's actual scope
-   (lifecycle) is already substantial, and bundling unrelated CLI surface
-   into the same phase makes the lifecycle work harder to review in
-   isolation.
+- **Create**: `tixolink create --name N --local-ip IP --remote-ip IP
+  [--mtu M] [--ttl T] [--inner-subnet CIDR --inner-local IP --inner-remote
+  IP]`. Giving zero create-specific flags on a TTY still launches the
+  wizard unchanged; giving any flag (or running without a TTY) takes the
+  non-interactive path instead. Missing `--name`/`--local-ip`/
+  `--remote-ip` is a usage error (`EXIT_USAGE`); an invalid value is a
+  validation error (`EXIT_VALIDATION`) from the same pure validators
+  (`lib/validation.sh`) the wizard uses. `--inner-subnet`/`--inner-local`/
+  `--inner-remote` must all be given together (manual addressing) or all
+  omitted (automatic `/30` allocation) — giving only some is a usage
+  error, not a silently-ignored partial request.
+- **Edit**: `tixolink edit <id-or-name> [--local-ip IP] [--remote-ip IP]
+  [--mtu M] [--ttl T] --force` (or `--dry-run` to preview without
+  `--force`). A flag you omit is resolved from the tunnel's **current**
+  config before the call — omitting a flag always means "leave this
+  field exactly as it is," never "reset it to a default." Without
+  `--force` (and without `--dry-run`), a flag-driven edit is refused with
+  a usage error describing exactly that, before touching anything.
+- Tests: `tests/integration/test_cli_tunnel_flags.sh` (27 checks) proves
+  the required-flag/validation errors, that `--dry-run` writes nothing,
+  that omitting `--force` changes nothing, that a single-field edit
+  changes only that field (checked against a real GRE interface in an
+  isolated network namespace), and that two successive single-field edits
+  each preserve everything the other one set.

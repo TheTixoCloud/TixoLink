@@ -58,6 +58,11 @@ validate::port_range() {
 validate::port_spec() {
     local spec="$1"
     [[ -n "$spec" ]] || return 1
+    # `read` stops at the first newline regardless of IFS, which would
+    # silently validate only the part before an embedded newline and
+    # discard the rest while still reporting success - reject outright
+    # instead of ever risking that silent truncation.
+    [[ "$spec" != *$'\n'* ]] || return 1
     local -a parts
     IFS=',' read -r -a parts <<<"$spec"
     local part

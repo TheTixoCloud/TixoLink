@@ -146,6 +146,58 @@ test_path_within_rejects_escape() {
     ! validate::path_within "/tmp/../etc/passwd" "/tmp"
 }
 
+# --- Adversarial: control/newline/shell-metacharacter injection ----------------
+
+test_tunnel_name_rejects_newline_injection() {
+    ! validate::tunnel_name $'germany\nrm -rf /'
+}
+
+test_tunnel_name_rejects_control_character() {
+    ! validate::tunnel_name $'germany\x01'
+}
+
+test_tunnel_name_rejects_extremely_long_string() {
+    local long; long="$(printf 'a%.0s' $(seq 1 100000))"
+    ! validate::tunnel_name "$long"
+}
+
+test_tunnel_name_rejects_haproxy_sensitive_characters() {
+    ! validate::tunnel_name 'foo"bar' || return 1
+    ! validate::tunnel_name 'foo#bar' || return 1
+    ! validate::tunnel_name 'foo;bar' || return 1
+}
+
+test_tunnel_id_rejects_shell_metacharacters() {
+    ! validate::tunnel_id '`id`'
+}
+
+test_iface_name_rejects_shell_injection_attempt() {
+    ! validate::iface_name 'tixo;rm -rf'
+}
+
+# validate::port_spec/ports::expand_spec both split a comma-separated spec
+# via `read`, which stops at the first REAL newline regardless of IFS -
+# an embedded newline must be rejected outright, never silently truncated
+# into "validate/expand only the part before it, report success anyway."
+test_port_spec_rejects_embedded_newline() {
+    ! validate::port_spec $'80\n443'
+}
+
+test_port_spec_rejects_newline_after_valid_prefix() {
+    # The dangerous case specifically: a syntactically valid port BEFORE
+    # the newline, which a truncating implementation would wrongly accept.
+    ! validate::port_spec $'443\nDROP TABLE'
+}
+
+th::run test_tunnel_name_rejects_newline_injection
+th::run test_tunnel_name_rejects_control_character
+th::run test_tunnel_name_rejects_extremely_long_string
+th::run test_tunnel_name_rejects_haproxy_sensitive_characters
+th::run test_tunnel_id_rejects_shell_metacharacters
+th::run test_iface_name_rejects_shell_injection_attempt
+th::run test_port_spec_rejects_embedded_newline
+th::run test_port_spec_rejects_newline_after_valid_prefix
+
 th::run test_ipv4_accepts_valid
 th::run test_ipv4_rejects_out_of_range
 th::run test_ipv4_rejects_leading_zeros

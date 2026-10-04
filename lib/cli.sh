@@ -23,12 +23,24 @@ Commands:
   help                         Show this help text
   list                         List all configured tunnels
   status [id-or-name]          Show status (all tunnels, or one)
-  create                       Interactive tunnel creation wizard
+  create                       Interactive tunnel creation wizard (no flags, TTY)
+  create --name N --local-ip IP --remote-ip IP [--mtu M] [--ttl T]
+         [--inner-subnet CIDR --inner-local IP --inner-remote IP]
+                                Non-interactive create (any flag given skips
+                                the wizard; --inner-* must all be given
+                                together for manual addressing, otherwise
+                                an automatic /30 is allocated)
   start   <id-or-name>         Bring a tunnel up (idempotent)
   stop    <id-or-name>         Take a tunnel down (idempotent)
   restart <id-or-name>         Stop then start a tunnel
   reload  <id-or-name>         Reconcile runtime state to match config
-  edit    <id-or-name>         Interactive edit wizard
+  edit    <id-or-name>         Interactive edit wizard (no flags, TTY)
+  edit    <id-or-name> [--local-ip IP] [--remote-ip IP] [--mtu M] [--ttl T] --force
+                                Non-interactive edit (requires --force to
+                                apply; --dry-run to preview). Any flag you
+                                omit keeps that field's CURRENT value
+                                unchanged - omitting a flag never resets it
+                                to a default.
   delete  <id-or-name>         Delete a tunnel (prompts unless --force)
   peer export <id-or-name>     Print (or --output <file>) a peer document
   peer import <file>           Import a peer document as a new tunnel
@@ -110,6 +122,137 @@ cli::cmd_start()   { tunnel::start   "$1" "$2"; }
 cli::cmd_stop()    { tunnel::stop    "$1" "$2"; }
 cli::cmd_restart() { tunnel::restart "$1" "$2"; }
 cli::cmd_reload()  { tunnel::reload  "$1" "$2"; }
+
+# cli::cmd_create <dry_run> [--name N --local-ip IP --remote-ip IP ...]
+# With zero create-specific flags on an interactive TTY, launches the same
+# wizard `create` has always launched. With any flag given (or no TTY),
+# takes the flag-driven path, which calls the exact same
+# tunnel::create_from_fields validation/transaction path the wizard calls
+# - no duplicated business logic.
+cli::cmd_create() {
+    local dry_run="$1"
+    shift
+    local name="" local_ip="" remote_ip="" mtu="" ttl="" inner_subnet="" inner_local="" inner_remote=""
+    local have_flags=0
+    while [[ $# -gt 0 ]]; do
+        have_flags=1
+        case "$1" in
+            --name) name="$2"; shift 2 ;;
+            --local-ip) local_ip="$2"; shift 2 ;;
+            --remote-ip) remote_ip="$2"; shift 2 ;;
+            --mtu) mtu="$2"; shift 2 ;;
+            --ttl) ttl="$2"; shift 2 ;;
+            --inner-subnet) inner_subnet="$2"; shift 2 ;;
+            --inner-local) inner_local="$2"; shift 2 ;;
+            --inner-remote) inner_remote="$2"; shift 2 ;;
+            *) ui::error "create: unknown option $1"; return "$EXIT_USAGE" ;;
+        esac
+    done
+
+    if [[ "$have_flags" == "0" ]]; then
+        if [[ -t 0 && -t 1 ]]; then
+            menu::wizard_create_tunnel
+            return $?
+        fi
+        ui::error "create requires either an interactive terminal or --name/--local-ip/--remote-ip"
+        return "$EXIT_USAGE"
+    fi
+
+    [[ -n "$name" ]]      || { ui::error "create: --name is required"; return "$EXIT_USAGE"; }
+    [[ -n "$local_ip" ]]  || { ui::error "create: --local-ip is required"; return "$EXIT_USAGE"; }
+    [[ -n "$remote_ip" ]] || { ui::error "create: --remote-ip is required"; return "$EXIT_USAGE"; }
+    mtu="${mtu:-1300}"
+    ttl="${ttl:-255}"
+
+    validate::tunnel_name "$name" || { ui::error "create: invalid --name: $name"; return "$EXIT_VALIDATION"; }
+    validate::ipv4 "$local_ip" || { ui::error "create: invalid --local-ip: $local_ip"; return "$EXIT_VALIDATION"; }
+    validate::ipv4 "$remote_ip" || { ui::error "create: invalid --remote-ip: $remote_ip"; return "$EXIT_VALIDATION"; }
+    validate::mtu "$mtu" || { ui::error "create: invalid --mtu: $mtu"; return "$EXIT_VALIDATION"; }
+    validate::ttl "$ttl" || { ui::error "create: invalid --ttl: $ttl"; return "$EXIT_VALIDATION"; }
+
+    local addr_mode="auto"
+    if [[ -n "$inner_subnet" || -n "$inner_local" || -n "$inner_remote" ]]; then
+        if [[ -z "$inner_subnet" || -z "$inner_local" || -z "$inner_remote" ]]; then
+            ui::error "create: --inner-subnet/--inner-local/--inner-remote must all be given together for manual addressing"
+            return "$EXIT_USAGE"
+        fi
+        if ! validate::cidr "$inner_subnet" || [[ "${inner_subnet#*/}" != "30" ]]; then
+            ui::error "create: --inner-subnet must be a valid /30 CIDR: $inner_subnet"
+            return "$EXIT_VALIDATION"
+        fi
+        validate::ipv4 "$inner_local" || { ui::error "create: invalid --inner-local: $inner_local"; return "$EXIT_VALIDATION"; }
+        validate::ipv4 "$inner_remote" || { ui::error "create: invalid --inner-remote: $inner_remote"; return "$EXIT_VALIDATION"; }
+        addr_mode="manual"
+    fi
+
+    local id status=0
+    id="$(tunnel::create_from_fields "$name" "$local_ip" "$remote_ip" "$addr_mode" \
+        "$inner_subnet" "$inner_local" "$inner_remote" "$mtu" "$ttl" "$dry_run")" || status=$?
+    [[ "$status" -ne 0 ]] && return "$status"
+    if [[ "$dry_run" == "1" ]]; then
+        ui::info "PLAN: would create tunnel '$name' (id: $id)"
+    else
+        printf '%s\n' "$id"
+    fi
+    return 0
+}
+
+# cli::cmd_edit <dry_run> <force> <id-or-name> [--local-ip IP] [--remote-ip IP] [--mtu M] [--ttl T]
+# A flag that is NOT given is resolved from the tunnel's CURRENT config
+# before calling tunnel::edit_from_fields (which requires all four
+# positionally) - omitting a flag always means "leave this field exactly
+# as it is," never "reset it to a default." Mirrors exactly what the
+# interactive wizard does via ui::input's own current-value default.
+cli::cmd_edit() {
+    local dry_run="$1" force="$2"
+    shift 2
+    local ref="${1:-}"
+    [[ $# -gt 0 ]] && shift
+    local local_ip="" remote_ip="" mtu="" ttl=""
+    local have_flags=0
+    while [[ $# -gt 0 ]]; do
+        have_flags=1
+        case "$1" in
+            --local-ip) local_ip="$2"; shift 2 ;;
+            --remote-ip) remote_ip="$2"; shift 2 ;;
+            --mtu) mtu="$2"; shift 2 ;;
+            --ttl) ttl="$2"; shift 2 ;;
+            *) ui::error "edit: unknown option $1"; return "$EXIT_USAGE" ;;
+        esac
+    done
+
+    [[ -n "$ref" ]] || { ui::error "edit requires a tunnel id or name"; return "$EXIT_USAGE"; }
+
+    if [[ "$have_flags" == "0" ]]; then
+        if [[ -t 0 && -t 1 ]]; then
+            menu::wizard_edit_tunnel "$ref"
+            return $?
+        fi
+        ui::error "edit requires either an interactive terminal or at least one of --local-ip/--remote-ip/--mtu/--ttl"
+        return "$EXIT_USAGE"
+    fi
+
+    local id; id="$(tunnel::resolve "$ref")" || return $?
+    local cfg; cfg="$(config::tunnel_read "$id")" || return "$EXIT_NOT_FOUND"
+    local ec; ec="$(jq -c '.engine_config' <<<"$cfg")"
+
+    [[ -z "$local_ip" ]]  && local_ip="$(jq -r '.local_public_ip' <<<"$ec")"
+    [[ -z "$remote_ip" ]] && remote_ip="$(jq -r '.remote_public_ip' <<<"$ec")"
+    [[ -z "$mtu" ]]       && mtu="$(jq -r '.mtu' <<<"$ec")"
+    [[ -z "$ttl" ]]       && ttl="$(jq -r '.ttl' <<<"$ec")"
+
+    validate::ipv4 "$local_ip" || { ui::error "edit: invalid --local-ip: $local_ip"; return "$EXIT_VALIDATION"; }
+    validate::ipv4 "$remote_ip" || { ui::error "edit: invalid --remote-ip: $remote_ip"; return "$EXIT_VALIDATION"; }
+    validate::mtu "$mtu" || { ui::error "edit: invalid --mtu: $mtu"; return "$EXIT_VALIDATION"; }
+    validate::ttl "$ttl" || { ui::error "edit: invalid --ttl: $ttl"; return "$EXIT_VALIDATION"; }
+
+    if [[ "$dry_run" != "1" && "$force" != "1" ]]; then
+        ui::warning "This would mutate tunnel $id. Re-run with --dry-run to preview, or --force to apply."
+        return "$EXIT_USAGE"
+    fi
+
+    tunnel::edit_from_fields "$id" "$local_ip" "$remote_ip" "$mtu" "$ttl" "$dry_run"
+}
 
 cli::_print_forwarding_status() {
     local line engine mid proto local_p remote_p state
@@ -429,12 +572,7 @@ cli::main() {
             fi
             ;;
         create)
-            if [[ -t 0 && -t 1 ]]; then
-                menu::wizard_create_tunnel || status=$?
-            else
-                ui::error "create requires an interactive terminal in this build"
-                status="$EXIT_USAGE"
-            fi
+            cli::cmd_create "$dry_run" "${positional[@]}" || status=$?
             ;;
         # Internal verbs used only by systemd/tixolink@.service (ExecStart/
         # Stop/Reload); intentionally omitted from cli::usage.
@@ -446,12 +584,7 @@ cli::main() {
         restart) cli::cmd_restart "${positional[0]:-}" "$dry_run" || status=$? ;;
         reload)  cli::cmd_reload  "${positional[0]:-}" "$dry_run" || status=$? ;;
         edit)
-            if [[ -t 0 && -t 1 ]]; then
-                menu::wizard_edit_tunnel "${positional[0]:-}" || status=$?
-            else
-                ui::error "edit requires an interactive terminal in this build"
-                status="$EXIT_USAGE"
-            fi
+            cli::cmd_edit "$dry_run" "$force" "${positional[@]}" || status=$?
             ;;
         delete)
             tunnel::delete "${positional[0]:-}" "$dry_run" "$force" || status=$?

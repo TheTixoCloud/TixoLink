@@ -106,6 +106,11 @@ ports::_overlaps() {
 ports::expand_spec() {
     local spec="$1"
     [[ -n "$spec" ]] || return "$EXIT_VALIDATION"
+    # `read` stops at the first newline regardless of IFS, which would
+    # silently expand only the part before an embedded newline and
+    # discard the rest while still reporting success - reject outright
+    # instead of ever risking that silent truncation.
+    [[ "$spec" != *$'\n'* ]] || return "$EXIT_VALIDATION"
 
     local -a tokens parsed_locals=() lines=()
     IFS=',' read -r -a tokens <<<"$spec"
