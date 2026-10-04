@@ -21,7 +21,7 @@ run_tixolink() {
 test_version_command_exits_zero_and_prints_version() {
     local out status=0
     out="$(run_tixolink version)" || status=$?
-    [[ "$status" -eq 0 ]] && [[ "$out" == "0.1.0-dev" ]]
+    [[ "$status" -eq 0 ]] && [[ "$out" == "$(head -n1 "$REPO_ROOT/VERSION")" ]]
 }
 
 test_help_command_exits_zero() {

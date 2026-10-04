@@ -547,6 +547,85 @@ menu::_manage_tunnels() {
     done
 }
 
+menu::_backup_restore() {
+    while true; do
+        ui::section "Backup / Restore"
+        local -a labels=("Create Backup" "List Backups" "Restore From Backup" "Back")
+        local choice
+        choice="$(ui::select "Select" "${labels[@]}")" || return
+        case "$choice" in
+            1)
+                local output; output="$(ui::input "Output file (blank = default, under \$TIXOLINK_VAR_DIR/backups)")"
+                local -a args=()
+                [[ -n "$output" ]] && args+=(--output "$output")
+                local archive
+                if archive="$(backup::create "${args[@]}")"; then
+                    ui::success "Backup created: $archive"
+                else
+                    ui::error "Backup failed."
+                fi
+                ;;
+            2)
+                local f found=0
+                while IFS= read -r f; do
+                    [[ -z "$f" ]] && continue
+                    found=1
+                    printf '  %s\n' "$f"
+                done < <(backup::list)
+                [[ "$found" == "0" ]] && ui::info "No backups found."
+                ;;
+            3)
+                local archive; archive="$(ui::input "Backup archive path")"
+                [[ -z "$archive" ]] && continue
+                restore::run "$archive" --dry-run
+                if ui::confirm "Proceed with this restore? This replaces current TixoLink configuration/state on disk only; no tunnel/forwarding will be started, stopped, or reloaded." "n"; then
+                    restore::run "$archive" --force
+                else
+                    ui::info "Restore cancelled."
+                fi
+                ;;
+            4) return ;;
+        esac
+    done
+}
+
+menu::_update() {
+    ui::section "Update"
+    local check
+    if ! check="$(update::check)"; then
+        ui::error "Could not check for updates."
+        return
+    fi
+    local current latest available
+    current="$(jq -r '.current_version' <<<"$check")"
+    latest="$(jq -r '.latest_version' <<<"$check")"
+    available="$(jq -r '.update_available' <<<"$check")"
+    printf 'Current version: %s\n' "$current"
+    printf 'Latest release:  %s\n' "$latest"
+    if [[ "$available" != "true" ]]; then
+        ui::success "Already up to date."
+        return
+    fi
+    ui::info "Release notes:"
+    jq -r '.release_notes' <<<"$check" | sed 's/^/  /'
+    if ui::confirm "Download, verify, and apply update $current -> $latest now?" "n"; then
+        update::apply --force
+    else
+        ui::info "Update cancelled."
+    fi
+}
+
+menu::_factory_reset() {
+    ui::section "Factory Reset"
+    ui::warning "This removes ALL tunnels and forwarding, restores the optimizer/BBR baseline, and resets TixoLink's config/state. TixoLink itself stays installed."
+    lifecycle::factory_reset --dry-run
+    if ui::confirm "Proceed with factory reset?" "n"; then
+        lifecycle::factory_reset --force
+    else
+        ui::info "Factory reset cancelled."
+    fi
+}
+
 menu::main() {
     local -a labels=(
         "Create Tunnel"
@@ -558,6 +637,7 @@ menu::main() {
         "Network Optimizer"
         "Backup / Restore"
         "Update"
+        "Factory Reset"
         "Settings"
         "About"
         "Exit"
@@ -576,8 +656,11 @@ menu::main() {
             5) menu::_diagnostics ;;
             6) menu::_benchmark ;;
             7) menu::_optimizer ;;
-            11) menu::_about ;;
-            12) return "$EXIT_OK" ;;
+            8) menu::_backup_restore ;;
+            9) menu::_update ;;
+            10) menu::_factory_reset ;;
+            12) menu::_about ;;
+            13) return "$EXIT_OK" ;;
             *) menu::_not_implemented ;;
         esac
     done

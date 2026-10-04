@@ -56,6 +56,8 @@ dependency::command_for() {
         mtr) printf 'mtr' ;;
         tracepath) printf 'tracepath' ;;
         conntrack) printf 'conntrack' ;;
+        iproute2) printf 'ip' ;;
+        ping) printf 'ping' ;;
         *) printf '%s' "$1" ;;
     esac
 }

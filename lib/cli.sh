@@ -51,6 +51,17 @@ Commands:
   bbr status                   Show congestion-control status (read-only)
   bbr enable                   Enable BBR (requires --force)
   bbr disable / bbr restore    Undo TixoLink's BBR change, back to baseline
+  backup [--output <file>]     Archive config/tunnels/state/optimizer baseline
+  restore <archive>            Restore a backup (requires --force to apply).
+                                 Rewrites config/tunnels/state/optimizer
+                                 baseline on disk only - does NOT start,
+                                 stop, or reload any tunnel/forwarding;
+                                 run 'tixolink reload <id>' afterwards for
+                                 any tunnel you want reconciled to it.
+  update check                 Check GitHub Releases for a newer version
+  update apply                 Download, verify, and apply an update (requires --force)
+  factory-reset                 Remove all tunnels/forwarding, restore optimizer/BBR
+                                 baseline, reset config/state (requires --force)
 
 Profiles: balanced, high_connection_count, high_throughput
 
@@ -275,6 +286,59 @@ cli::cmd_bbr() {
     esac
 }
 
+cli::cmd_backup() {
+    local output="" force=0 dry_run="$1"
+    shift
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --output) output="$2"; shift 2 ;;
+            --force) force=1; shift ;;
+            *) ui::error "backup: unknown option $1"; return "$EXIT_USAGE" ;;
+        esac
+    done
+    [[ "$dry_run" == "1" ]] && { ui::info "backup does not support --dry-run (it never mutates anything other than creating the archive)."; }
+    local -a args=()
+    [[ -n "$output" ]] && args+=(--output "$output")
+    [[ "$force" == "1" ]] && args+=(--force)
+    local archive; archive="$(backup::create "${args[@]}")" || return $?
+    ui::success "Backup created: $archive"
+}
+
+cli::cmd_restore() {
+    local archive="$1" force="$2" dry_run="$3"
+    local -a args=()
+    [[ "$force" == "1" ]] && args+=(--force)
+    [[ "$dry_run" == "1" ]] && args+=(--dry-run)
+    restore::run "$archive" "${args[@]}"
+}
+
+cli::cmd_update() {
+    local sub="$1" force="$2" dry_run="$3"
+    case "$sub" in
+        check)
+            update::check | jq .
+            ;;
+        apply)
+            local -a args=()
+            [[ "$force" == "1" ]] && args+=(--force)
+            [[ "$dry_run" == "1" ]] && args+=(--dry-run)
+            update::apply "${args[@]}"
+            ;;
+        *)
+            ui::error "unknown update subcommand: $sub"
+            return "$EXIT_USAGE"
+            ;;
+    esac
+}
+
+cli::cmd_factory_reset() {
+    local force="$1" dry_run="$2"
+    local -a args=()
+    [[ "$force" == "1" ]] && args+=(--force)
+    [[ "$dry_run" == "1" ]] && args+=(--dry-run)
+    lifecycle::factory_reset "${args[@]}"
+}
+
 cli::cmd_monitor() {
     local ref="$1" interval="${2:-2}"
     if [[ ! -t 0 || ! -t 1 ]]; then
@@ -418,6 +482,20 @@ cli::main() {
             ;;
         bbr)
             cli::cmd_bbr "${positional[0]:-}" "$force" "$dry_run" || status=$?
+            ;;
+        backup)
+            local -a backup_args=("${positional[@]}")
+            [[ "$force" == "1" ]] && backup_args+=(--force)
+            cli::cmd_backup "$dry_run" "${backup_args[@]}" || status=$?
+            ;;
+        restore)
+            cli::cmd_restore "${positional[0]:-}" "$force" "$dry_run" || status=$?
+            ;;
+        update)
+            cli::cmd_update "${positional[0]:-}" "$force" "$dry_run" || status=$?
+            ;;
+        factory-reset)
+            cli::cmd_factory_reset "$force" "$dry_run" || status=$?
             ;;
         *)
             ui::error "unknown command: $command"

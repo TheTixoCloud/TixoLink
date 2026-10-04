@@ -14,7 +14,7 @@ source "$TIXOLINK_LIB_DIR/common.sh"
 test_version_reads_version_file() {
     local v
     v="$(common::version)"
-    th::assert_eq "$v" "0.1.0-dev"
+    th::assert_eq "$v" "$(head -n1 "$REPO_ROOT/VERSION")"
 }
 
 test_trim_strips_whitespace() {

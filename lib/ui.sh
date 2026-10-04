@@ -169,15 +169,16 @@ ui::table() {
     for row in "${rows[@]}"; do
         IFS='|' read -r -a cells <<<"$row"
         for (( c=0; c<ncols; c++ )); do
-            local len=${#cells[c]:-0}
+            local cell="${cells[c]:-}"
+            local len=${#cell}
             (( len > widths[c] )) && widths[c]=$len
         done
     done
 
-    ui::_table_row headers[@] widths[@] "$ncols" "$UI_BOLD"
+    ui::_table_row headers widths "$ncols" "$UI_BOLD"
     for row in "${rows[@]}"; do
         IFS='|' read -r -a cells <<<"$row"
-        ui::_table_row cells[@] widths[@] "$ncols" ""
+        ui::_table_row cells widths "$ncols" ""
     done
 }
 
@@ -188,7 +189,7 @@ ui::_table_row() {
     local c line=""
     for (( c=0; c<ncols; c++ )); do
         local cell="${_cells_ref[$c]:-}"
-        local width="${_widths_ref[$c]}"
+        local width="${_widths_ref[$c]:-0}"
         line+="$(printf '%s%-*s%s  ' "$style" "$width" "$cell" "$UI_RESET")"
     done
     printf '%s\n' "$line"
