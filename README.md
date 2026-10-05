@@ -2,15 +2,15 @@
 
 Linux tunnel management suite, by TheTixoCloud.
 
-> **Status: release candidate (`1.0.0-rc1`).** The foundation layer, the
+> **Status: release candidate (`1.0.0-rc2`).** The foundation layer, the
 > GRE transport engine, Netfilter/HAProxy forwarding, diagnostics,
 > benchmarking, live monitoring, the network optimizer/BBR manager, the
-> non-interactive CLI, and the install/backup/restore/update/uninstall
-> lifecycle are all implemented and covered by unit and namespace-based
-> integration tests. This is a **release candidate**, not a declaration of
-> production stability — it has not yet had a tagged public release, and
-> CLI flags or the on-disk schema may still change before `1.0.0`. See
-> [CHANGELOG.md](CHANGELOG.md) for the detailed history.
+> non-interactive CLI, the install/backup/restore/update/uninstall
+> lifecycle, and the public one-command bootstrap installer are all
+> implemented and covered by unit and namespace-based integration tests.
+> This is a **release candidate**, not a declaration of production
+> stability — CLI flags or the on-disk schema may still change before
+> `1.0.0`. See [CHANGELOG.md](CHANGELOG.md) for the detailed history.
 
 ## What this is
 
@@ -126,21 +126,67 @@ and transaction model. In short:
 
 ## Installation
 
+Run as `root` on a supported Debian/Ubuntu server:
+
+```
+TIXOLINK_CHANNEL=rc bash <(curl -fsSL https://raw.githubusercontent.com/TheTixoCloud/TixoLink/master/TixoLink.sh)
+```
+
+After installation, launch TixoLink with:
+
+```
+tixolink
+```
+
+`TixoLink.sh` is a small, auditable bootstrap: it checks the host,
+downloads the selected GitHub Release artifact, verifies its SHA256
+checksum and internal archive structure *before* extracting anything,
+then delegates the actual install to that release's own `install.sh`
+(the same authoritative lifecycle `tixolink update apply` uses — see
+[docs/lifecycle.md](docs/lifecycle.md)). It never runs a second
+unverified script and never clones the repository.
+
+**Why `TIXOLINK_CHANNEL=rc` right now:** there is no stable `1.0.0`
+release yet — only release candidates. Plain `bash TixoLink.sh` (no
+override) only ever installs a **stable** release and will deliberately
+refuse rather than silently install a prerelease. Once `1.0.0` ships,
+the one-line command simplifies to:
+
+```
+bash <(curl -fsSL https://raw.githubusercontent.com/TheTixoCloud/TixoLink/master/TixoLink.sh)
+```
+
+**Other ways to select a release:**
+
+```
+TIXOLINK_VERSION=1.0.0-rc1 bash <(curl -fsSL https://raw.githubusercontent.com/TheTixoCloud/TixoLink/master/TixoLink.sh)   # install an exact version
+```
+
+**Manual, fully-auditable installation** (clone and read everything
+first):
+
 ```
 git clone https://github.com/TheTixoCloud/TixoLink.git
 cd TixoLink
 sudo ./install.sh          # shows a plan and asks for confirmation
 ```
 
-This installs to `/usr/local/bin/tixolink`, `/usr/local/lib/tixolink/`,
-and the `tixolink@.service` systemd template, and creates
-`/etc/tixolink/` and `/var/lib/tixolink/` with defaults **if they don't
-already exist** — an existing configuration from a prior install is never
-overwritten. No tunnel is started automatically by installing. Running
-from a development checkout (`bin/tixolink`) continues to work without
-installing anything. See [docs/lifecycle.md](docs/lifecycle.md) for
-upgrade, backup/restore, update, uninstall, and factory-reset details, and
-for the sandboxed (`TIXOLINK_ROOT`) testing mechanism.
+Either path installs to `/usr/local/bin/tixolink`,
+`/usr/local/lib/tixolink/`, and the `tixolink@.service` systemd template,
+and creates `/etc/tixolink/` and `/var/lib/tixolink/` with defaults **if
+they don't already exist** — an existing configuration from a prior
+install is never overwritten. No tunnel is started automatically by
+installing. Running from a development checkout (`bin/tixolink`)
+continues to work without installing anything.
+
+**Checksum/security model:** SHA256 (`SHA256SUMS`, published alongside
+each release artifact) verifies that the bytes you received match what
+was published — it does **not** authenticate that the release channel
+itself is uncompromised; there is no artifact signing in this build. See
+[docs/lifecycle.md](docs/lifecycle.md) for the full trust model, and for
+upgrade, backup/restore, update, uninstall, and factory-reset details,
+and for the sandboxed (`TIXOLINK_ROOT`) testing mechanism. Supported
+distributions/architecture are listed above under "Supported systems".
 
 ## Security notice
 

@@ -104,24 +104,24 @@ exit 0
 EOF
     chmod +x "$pkg/install.sh"
     ( cd "$dir" && tar -czf "artifact.tar.gz" "TixoLink-${version}" )
-    ( cd "$dir" && sha256sum "artifact.tar.gz" | awk '{print $1, "artifact.tar.gz"}' >checksums.sha256 )
+    ( cd "$dir" && sha256sum "artifact.tar.gz" | awk '{print $1, "artifact.tar.gz"}' >SHA256SUMS )
 }
 
 test_apply_rejects_checksum_mismatch() {
     local dir="$TIXOLINK_TEST_ROOT/pkg1"
     install -d "$dir"
     make_fake_release_package "$dir" "9.9.9"
-    sed -i 's/^[0-9a-f]\{64\}/0000000000000000000000000000000000000000000000000000000000000000/' "$dir/checksums.sha256"
+    sed -i 's/^[0-9a-f]\{64\}/0000000000000000000000000000000000000000000000000000000000000000/' "$dir/SHA256SUMS"
 
     update::_http_get() {
         case "$1" in
-            *releases/latest) printf '{"tag_name":"v9.9.9","assets":[{"name":"artifact.tar.gz","browser_download_url":"fixture://artifact"},{"name":"checksums.sha256","browser_download_url":"fixture://checksums"}]}' ;;
+            *releases/latest) printf '{"tag_name":"v9.9.9","assets":[{"name":"artifact.tar.gz","browser_download_url":"fixture://artifact"},{"name":"SHA256SUMS","browser_download_url":"fixture://checksums"}]}' ;;
         esac
     }
     update::_http_get_file() {
         case "$1" in
             fixture://artifact) cp "$dir/artifact.tar.gz" "$2" ;;
-            fixture://checksums) cp "$dir/checksums.sha256" "$2" ;;
+            fixture://checksums) cp "$dir/SHA256SUMS" "$2" ;;
         esac
     }
     ! update::apply --force >/dev/null 2>&1
@@ -135,6 +135,47 @@ test_apply_rejects_missing_artifact() {
 test_apply_noop_when_up_to_date() {
     update::_http_get() { printf '%s' "$FIXTURE_RELEASE_SAME"; }
     update::apply --force >/dev/null 2>&1
+}
+
+# Regression test: packaging/build-release.sh (and the real GitHub
+# release) names the checksum asset "SHA256SUMS", not "checksums.sha256" -
+# a mismatch that previously made every real update silently fail at
+# asset selection. This exercises the full apply path end-to-end against
+# that exact asset name.
+test_apply_succeeds_with_real_asset_naming() {
+    local dir="$TIXOLINK_TEST_ROOT/pkg2"
+    local fake_lib="$TIXOLINK_TEST_ROOT/fake-lib-$$"
+    install -d "$dir" "$fake_lib"
+    printf '0.0.1' >"$fake_lib/VERSION"
+    make_fake_release_package "$dir" "9.9.9"
+    # The shared fixture's fake install.sh only echoes; make it actually
+    # write the new VERSION into a private fake TIXOLINK_LIB_DIR (never
+    # the real repo's lib/) so update::apply's post-install version check
+    # has something real to verify against.
+    cat >"$dir/TixoLink-9.9.9/install.sh" <<EOF
+#!/usr/bin/env bash
+printf '9.9.9' >"${fake_lib}/VERSION"
+exit 0
+EOF
+    chmod +x "$dir/TixoLink-9.9.9/install.sh"
+    ( cd "$dir" && tar -czf "artifact.tar.gz" "TixoLink-9.9.9" )
+    ( cd "$dir" && sha256sum "artifact.tar.gz" | awk '{print $1, "artifact.tar.gz"}' >SHA256SUMS )
+
+    (
+        TIXOLINK_LIB_DIR="$fake_lib"
+        update::_http_get() {
+            case "$1" in
+                *releases/latest) printf '{"tag_name":"v9.9.9","assets":[{"name":"artifact.tar.gz","browser_download_url":"fixture://artifact"},{"name":"SHA256SUMS","browser_download_url":"fixture://sha256sums"}]}' ;;
+            esac
+        }
+        update::_http_get_file() {
+            case "$1" in
+                fixture://artifact) cp "$dir/artifact.tar.gz" "$2" ;;
+                fixture://sha256sums) cp "$dir/SHA256SUMS" "$2" ;;
+            esac
+        }
+        update::apply --force >/dev/null 2>&1
+    )
 }
 
 th::run test_vcmp_equal
@@ -161,5 +202,6 @@ th::run test_check_handles_rate_limit_response
 th::run test_apply_rejects_checksum_mismatch
 th::run test_apply_rejects_missing_artifact
 th::run test_apply_noop_when_up_to_date
+th::run test_apply_succeeds_with_real_asset_naming
 
 th::summary

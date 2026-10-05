@@ -54,6 +54,55 @@ never inferred from a path merely looking familiar
 (`/usr/local/bin/tixolink` is never deleted because of its name — only
 because the manifest says so).
 
+## Public bootstrap installer (`TixoLink.sh`)
+
+```
+bash <(curl -fsSL https://raw.githubusercontent.com/TheTixoCloud/TixoLink/master/TixoLink.sh)
+```
+
+A small, auditable, root-level script (intentionally *not* part of the
+installed package) that gives first-time users a single public command.
+It does **not** reimplement `install.sh` and never runs a second
+unverified `curl | bash`: it checks the host (root, supported OS, amd64,
+HTTPS-capable curl), resolves which GitHub Release to install, downloads
+that release's `tixolink-<version>.tar.gz` and `SHA256SUMS`, verifies the
+checksum and the archive's internal structure (absolute paths, `..`
+traversal, wrong top-level directory, symlinks/hardlinks/devices/FIFOs,
+and the same per-file/total/entry-count resource limits as
+`common::tar_extract_safely` — reimplemented standalone, since that
+library doesn't exist on the target yet) **before extracting a single
+byte**, and only then delegates to the verified package's own
+`install.sh --force` — the exact same authoritative lifecycle
+`modules/update.sh` already delegates to. Every network call goes
+through `bootstrap::http_get`/`bootstrap::http_get_file`, the seams
+`tests/unit/test_bootstrap.sh` and
+`tests/integration/test_bootstrap_sandbox.sh` override to serve local
+fixtures — no test ever reaches the real GitHub API or installs onto the
+real host.
+
+**Release selection:**
+
+| Setting | Behavior |
+|---|---|
+| *(default)* / `TIXOLINK_CHANNEL=stable` | Latest **non-prerelease** GitHub Release. Fails closed with an explicit message if none is published yet — never silently falls back to a prerelease. |
+| `TIXOLINK_CHANNEL=rc` | Latest published prerelease (release candidate). |
+| `TIXOLINK_VERSION=X.Y.Z[-rcN]` | Installs exactly that version. Strictly validated against an allowlist regex before it is ever used in a path/filename/URL. Bypasses the GitHub API entirely via GitHub's deterministic `releases/download/<tag>/<asset>` URL, so this mode needs no `jq`. |
+
+During the `1.0.0-rcN` period (no stable `1.0.0` exists yet), the public
+one-command install therefore reads `TIXOLINK_CHANNEL=rc bash
+TixoLink.sh` or `TIXOLINK_VERSION=1.0.0-rc1 bash TixoLink.sh` — plain
+`bash TixoLink.sh` with no overrides deliberately refuses, by design,
+rather than quietly redefining "stable" to mean "prerelease."
+
+**Trust model**: identical to the updater's, below — SHA256 verifies the
+downloaded bytes match what the release published, not that the release
+channel itself is uncompromised.
+
+**Idempotency**: the bootstrap invents no install/upgrade/downgrade logic
+of its own; `install.sh --force` alone decides fresh vs. reinstall vs.
+upgrade vs. downgrade-refusal, exactly as it does for a manual
+`git clone` + `./install.sh` or for `tixolink update apply`.
+
 ## Installer (`install.sh`)
 
 ```
@@ -254,11 +303,12 @@ report for the honest bound on what this does and doesn't fully close.
 
 ## Updater (`tixolink update check` / `tixolink update apply`)
 
-Targets GitHub Releases at the (not-yet-created) `TheTixoCloud/TixoLink`
-repository — never `git pull origin main`, never an arbitrary branch HEAD.
-`update check` compares `VERSION` against the latest release's tag.
-`update apply`: downloads the release's `<name>.tar.gz` artifact and its
-`checksums.sha256` asset, verifies the artifact's SHA256 against that
+Targets GitHub Releases at `TheTixoCloud/TixoLink` — never `git pull
+origin main`, never an arbitrary branch HEAD. `update check` compares
+`VERSION` against the latest release's tag. `update apply`: downloads the
+release's `<name>.tar.gz` artifact and its `SHA256SUMS` asset (the same
+asset `packaging/build-release.sh` produces), verifies the artifact's
+SHA256 against that
 manifest (refusing on any mismatch), extracts into a private staging
 directory using the same `common::tar_extract_safely` path-safety and
 resource-limit checks restore uses, confirms the extracted package's `VERSION` matches the

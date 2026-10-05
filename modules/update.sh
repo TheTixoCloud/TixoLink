@@ -4,7 +4,8 @@
 # Updates are explicit, versioned GitHub Releases only - never
 # `git pull origin main`, never an arbitrary branch HEAD. A release
 # publishes exactly one <name>.tar.gz source-tree artifact plus a
-# "checksums.sha256" asset; update::apply verifies the downloaded archive's
+# "SHA256SUMS" asset (packaging/build-release.sh); update::apply verifies
+# the downloaded archive's
 # SHA256 against that manifest before anything is extracted, then delegates
 # the actual filesystem change to the extracted package's own install.sh,
 # reusing its PRECHECK/BACKUP/STAGE/VALIDATE/ACTIVATE/VERIFY/COMMIT
@@ -155,14 +156,14 @@ update::apply() {
 
     local archive_asset checksum_asset
     archive_asset="$(update::_select_asset "$release_json" ".tar.gz")"
-    checksum_asset="$(update::_select_asset "$release_json" "checksums.sha256")"
+    checksum_asset="$(update::_select_asset "$release_json" "SHA256SUMS")"
 
     if [[ -z "$archive_asset" ]]; then
         log::error "update: release $latest does not publish a .tar.gz artifact; refusing to update"
         return "$EXIT_GENERIC"
     fi
     if [[ -z "$checksum_asset" ]]; then
-        log::error "update: release $latest does not publish a checksums.sha256 manifest; refusing to update"
+        log::error "update: release $latest does not publish a SHA256SUMS manifest; refusing to update"
         return "$EXIT_GENERIC"
     fi
 
@@ -187,19 +188,19 @@ update::apply() {
     # shellcheck disable=SC2064  # $work must expand now, not at trap time
     trap "rm -rf -- '$work'" RETURN
 
-    local archive_tmp="${work}/${archive_name}" checksum_tmp="${work}/checksums.sha256"
+    local archive_tmp="${work}/${archive_name}" checksum_tmp="${work}/SHA256SUMS"
     if ! update::_http_get_file "$archive_url" "$archive_tmp" || [[ ! -s "$archive_tmp" ]]; then
         log::error "update: failed to download $archive_name"
         return "$EXIT_GENERIC"
     fi
     if ! update::_http_get_file "$checksum_url" "$checksum_tmp" || [[ ! -s "$checksum_tmp" ]]; then
-        log::error "update: failed to download checksums.sha256"
+        log::error "update: failed to download SHA256SUMS"
         return "$EXIT_GENERIC"
     fi
 
     local expected; expected="$(awk -v n="$archive_name" '$2==n {print $1}' "$checksum_tmp" | head -n1)"
     if [[ -z "$expected" ]]; then
-        log::error "update: checksums.sha256 does not list an entry for $archive_name"
+        log::error "update: SHA256SUMS does not list an entry for $archive_name"
         return "$EXIT_GENERIC"
     fi
     local actual; actual="$(sha256sum "$archive_tmp" | awk '{print $1}')"

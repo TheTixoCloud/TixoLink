@@ -47,5 +47,6 @@ docs/firewall.md
 docs/lifecycle.md
 docs/networking.md
 docs/release-notes/1.0.0-rc1.md
+docs/release-notes/1.0.0-rc2.md
 docs/security.md
 docs/troubleshooting.md

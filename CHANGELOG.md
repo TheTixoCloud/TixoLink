@@ -7,6 +7,56 @@ follows [Semantic Versioning](https://semver.org/). Pre-1.0 development
 `1.0.0-rcN` pre-release tags sort before their corresponding `1.0.0` per
 `modules/update.sh:update::_version_compare`.
 
+## [1.0.0-rc2] - RELEASE CANDIDATE
+
+**This is a release candidate, not a declaration of production
+stability.** Adds the public one-command bootstrap installer and fixes a
+release-asset naming defect in the updater discovered while building it.
+
+### Phase 11 — one-command public installer UX
+
+- Added `TixoLink.sh`, a small root-level bootstrap installer for the
+  public UX `bash <(curl -fsSL
+  https://raw.githubusercontent.com/TheTixoCloud/TixoLink/master/TixoLink.sh)`.
+  It checks the host (root, supported OS, amd64, HTTPS-capable curl),
+  resolves which GitHub Release to install (`TIXOLINK_CHANNEL=stable`
+  default / `rc` / exact `TIXOLINK_VERSION=X.Y.Z[-rcN]`), downloads that
+  release's `tixolink-<version>.tar.gz` + `SHA256SUMS`, verifies the
+  checksum and the archive's internal structure (absolute paths, `..`
+  traversal, wrong top-level directory, symlink/hardlink/device/FIFO
+  rejection, and the same per-file/total/entry-count resource limits as
+  `common::tar_extract_safely`, reimplemented standalone since that
+  library doesn't exist pre-install) before extracting a single byte,
+  then delegates to the verified package's own `install.sh --force` -
+  the same authoritative lifecycle `modules/update.sh` already delegates
+  to. It never runs a second unverified `curl | bash`, never clones the
+  repository, and never installs from a working tree. See
+  "Public bootstrap installer" in `docs/lifecycle.md`.
+- The `stable` channel fails closed (with an explicit message) rather
+  than silently installing a prerelease when no stable release is
+  published yet - during the `1.0.0-rcN` period, the public one-command
+  install is `TIXOLINK_CHANNEL=rc bash TixoLink.sh` or
+  `TIXOLINK_VERSION=1.0.0-rc1 bash TixoLink.sh`.
+- Added `tests/unit/test_bootstrap.sh` (preflight checks, version/channel
+  validation, checksum verification, archive-safety rejections, and
+  end-to-end `bootstrap::main` scenarios against local fixtures) and
+  `tests/integration/test_bootstrap_sandbox.sh` (fresh install, reinstall,
+  upgrade, downgrade refusal, and CLI availability against the real
+  `install.sh`/`lib` tree, entirely under a private `TIXOLINK_ROOT`
+  sandbox - never the real host filesystem).
+- README's Installation section now leads with the one-command bootstrap;
+  the manual `git clone` + `./install.sh` path is documented as the
+  fully-auditable alternative.
+- **Fixed**: `modules/update.sh` selected the release's checksum asset by
+  the name `checksums.sha256`, but `packaging/build-release.sh` (and the
+  actual published `v1.0.0-rc1` release) names that asset `SHA256SUMS` -
+  a mismatch that made every real `tixolink update apply` silently fail
+  at asset selection. Discovered while building `TixoLink.sh` against the
+  real release layout. Fixed in `update::apply`, `docs/lifecycle.md`, and
+  `tests/unit/test_update.sh` (which previously only exercised a
+  self-consistent fixture using the wrong name); added
+  `test_apply_succeeds_with_real_asset_naming` as a regression test.
+
 ## [1.0.0-rc1] - RELEASE CANDIDATE
 
 **This is a release candidate, not a declaration of production
