@@ -7,6 +7,50 @@ follows [Semantic Versioning](https://semver.org/). Pre-1.0 development
 `1.0.0-rcN` pre-release tags sort before their corresponding `1.0.0` per
 `modules/update.sh:update::_version_compare`.
 
+## [1.0.0-rc3] - RELEASE CANDIDATE
+
+**This is a release candidate, not a declaration of production
+stability.** Fixes a release-blocking defect in `TixoLink.sh` discovered
+by the real public-bootstrap validation performed after publishing
+`1.0.0-rc2`.
+
+### Fixed: bootstrap HTTPS capability detection
+
+`bootstrap::_curl_supports_https` checked for HTTPS support with
+`curl --version 2>/dev/null | head -n1 | grep -qi https` - a substring
+grep of only curl's *first* version-banner line. Real curl output never
+puts protocol names on that line (it's `curl <version> (...)
+libcurl/... <ssl-lib> ...`); protocols are listed on a separate
+`Protocols:` line further down. The result: this check failed against
+every real curl installation tested, including the host used to build
+and publish `1.0.0-rc2` itself, so the public one-command installer
+(`bash <(curl -fsSL .../TixoLink.sh)`) unconditionally aborted with
+`"installed curl has no HTTPS support"` before ever contacting GitHub -
+making RC2's flagship feature non-functional in practice. RC2's bootstrap
+unit tests all redefined the HTTPS-check seam rather than exercising the
+real function against real `curl --version` output, so this defect
+passed the full test suite undetected; it was only caught by the final
+real (non-fixture) public-bootstrap validation step after RC2's
+Git/tag/release publication, before the artifact was exercised against
+a live install.
+
+Fixed by replacing the substring grep with an exact-token parse of the
+`Protocols:` line (`bootstrap::_curl_supports_https` now requires `https`
+as one of that line's space-separated tokens), with new regression tests
+that exercise the real function against realistic `curl --version`
+fixtures (supported, unsupported, an unrelated "https" substring
+elsewhere in the banner, a missing `Protocols:` line, and a failing
+`curl --version` invocation) plus a test that runs the real function
+against this build host's actual installed curl - closing the exact gap
+that let the defect ship. A broader preflight audit (root/OS/arch
+detection, `sha256sum`/`tar`/`mktemp`/`awk`/`jq` assumptions, checksum
+and archive-listing parsing) against real Ubuntu 22.04/24.04 and Debian
+12 command output found no further defects.
+
+RC2's `v1.0.0-rc2` Git tag and GitHub Release remain published and
+unmodified, exactly as they shipped with this defect - this is a forward
+fix, not a rewrite of RC2's history.
+
 ## [1.0.0-rc2] - RELEASE CANDIDATE
 
 **This is a release candidate, not a declaration of production

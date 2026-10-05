@@ -66,7 +66,20 @@ bootstrap::_current_uid() { id -u; }
 bootstrap::_os_release_file() { printf '/etc/os-release'; }
 bootstrap::_arch() { uname -m; }
 bootstrap::_has_curl() { command -v curl >/dev/null 2>&1; }
-bootstrap::_curl_supports_https() { curl --version 2>/dev/null | head -n1 | grep -qi https; }
+# Exact-token match against curl's "Protocols:" line, not a substring
+# grep of the whole banner - curl's own version banner would otherwise
+# false-negative on itself: "https" never appears on line 1 (that's
+# "curl <version> (...) libcurl/... <ssl-lib> ..."), only on the
+# separate "Protocols:" line. Fails closed if `curl --version` fails or
+# no such line exists.
+bootstrap::_curl_supports_https() {
+    curl --version 2>/dev/null | awk '
+        /^Protocols:/ {
+            for (i = 2; i <= NF; i++) if ($i == "https") { found = 1 }
+        }
+        END { exit !found }
+    '
+}
 bootstrap::_apt_install() { DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$1" >/dev/null 2>&1; }
 bootstrap::_apt_update() { apt-get update -qq >/dev/null 2>&1; }
 # Extra args appended to the verified package's install.sh invocation.

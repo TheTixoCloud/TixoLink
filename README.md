@@ -2,7 +2,7 @@
 
 Linux tunnel management suite, by TheTixoCloud.
 
-> **Status: release candidate (`1.0.0-rc2`).** The foundation layer, the
+> **Status: release candidate (`1.0.0-rc3`).** The foundation layer, the
 > GRE transport engine, Netfilter/HAProxy forwarding, diagnostics,
 > benchmarking, live monitoring, the network optimizer/BBR manager, the
 > non-interactive CLI, the install/backup/restore/update/uninstall

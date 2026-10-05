@@ -120,14 +120,124 @@ test_accepts_amd64_arch() {
 }
 
 test_rejects_missing_curl() {
-    bootstrap::_has_curl() { return 1; }
-    ! bootstrap::check_curl >/dev/null 2>&1
+    # Subshell: function redefinitions in bash are not locally scoped,
+    # so overriding bootstrap::_has_curl here would otherwise leak into
+    # every later test in this file, including the real-detector tests
+    # for bootstrap::_curl_supports_https below.
+    (
+        bootstrap::_has_curl() { return 1; }
+        ! bootstrap::check_curl >/dev/null 2>&1
+    )
 }
 
 test_rejects_curl_without_https() {
-    bootstrap::_has_curl() { return 0; }
-    bootstrap::_curl_supports_https() { return 1; }
-    ! bootstrap::check_curl >/dev/null 2>&1
+    (
+        bootstrap::_has_curl() { return 0; }
+        bootstrap::_curl_supports_https() { return 1; }
+        ! bootstrap::check_curl >/dev/null 2>&1
+    )
+}
+
+# --- bootstrap::_curl_supports_https: exact-token "Protocols:" parsing ----
+# Regression coverage for the RC2 defect: the old implementation grepped
+# `curl --version | head -n1` for the substring "https", but curl's own
+# version banner never puts protocol names on line 1 - they're on a
+# separate "Protocols:" line - so that check always failed against real
+# curl output. These tests drive the real function against fixture
+# `curl --version` text (never a redefined seam) so a regression here
+# cannot hide behind a self-consistent fake the way RC2's did.
+
+# fake_curl_version_bin <bindir> <version-output|FAIL>
+# Writes a sandboxed `curl` into <bindir> that answers `curl --version`
+# with the given literal text (read from stdin), or exits non-zero if
+# called with FAIL. Never touches the real curl on PATH.
+fake_curl_version_bin() {
+    local bindir="$1"
+    install -d "$bindir"
+    local body; body="$(cat)"
+    if [[ "$body" == "FAIL" ]]; then
+        cat >"$bindir/curl" <<'EOF'
+#!/usr/bin/env bash
+exit 7
+EOF
+    else
+        {
+            printf '#!/usr/bin/env bash\ncat <<'"'"'VEREOF'"'"'\n'
+            printf '%s\n' "$body"
+            printf 'VEREOF\n'
+        } >"$bindir/curl"
+    fi
+    chmod +x "$bindir/curl"
+}
+
+test_curl_https_detector_accepts_realistic_supported_output() {
+    local bindir="$TIXOLINK_TEST_ROOT/curl-a"
+    fake_curl_version_bin "$bindir" <<'EOF'
+curl 8.5.0 (x86_64-pc-linux-gnu) libcurl/8.5.0 OpenSSL/3.0.13 zlib/1.3
+Release-Date: 2023-12-06
+Protocols: dict file ftp ftps gopher gophers http https imap imaps
+Features: alt-svc AsynchDNS HTTP2 HTTPS-proxy IDN IPv6 SSL
+EOF
+    ( PATH="$bindir:$PATH" bootstrap::_curl_supports_https >/dev/null 2>&1 )
+}
+
+test_curl_https_detector_rejects_protocol_list_without_https() {
+    local bindir="$TIXOLINK_TEST_ROOT/curl-b"
+    fake_curl_version_bin "$bindir" <<'EOF'
+curl 7.0.0 (minimal build)
+Protocols: dict file ftp http imap
+Features: SSL
+EOF
+    ( PATH="$bindir:$PATH"; ! bootstrap::_curl_supports_https >/dev/null 2>&1 )
+}
+
+test_curl_https_detector_rejects_unrelated_https_mention() {
+    local bindir="$TIXOLINK_TEST_ROOT/curl-c"
+    # "https" appears in the banner (and even looks protocol-ish) but
+    # never as an actual token on the Protocols: line.
+    fake_curl_version_bin "$bindir" <<'EOF'
+curl 8.0.0 (built against libhttps-compat, not real https support)
+Release-Date: 2024-01-01
+Protocols: dict file ftp http imap
+Features: SSL
+EOF
+    ( PATH="$bindir:$PATH"; ! bootstrap::_curl_supports_https >/dev/null 2>&1 )
+}
+
+test_curl_https_detector_rejects_missing_protocols_line() {
+    local bindir="$TIXOLINK_TEST_ROOT/curl-d"
+    fake_curl_version_bin "$bindir" <<'EOF'
+curl 8.0.0 (no Protocols line at all)
+Features: SSL https-ish-feature-name
+EOF
+    ( PATH="$bindir:$PATH"; ! bootstrap::_curl_supports_https >/dev/null 2>&1 )
+}
+
+test_curl_https_detector_fails_closed_when_curl_version_fails() {
+    local bindir="$TIXOLINK_TEST_ROOT/curl-e"
+    fake_curl_version_bin "$bindir" <<'EOF'
+FAIL
+EOF
+    ( PATH="$bindir:$PATH"; ! bootstrap::_curl_supports_https >/dev/null 2>&1 )
+}
+
+test_curl_https_detector_accepts_https_as_exact_token_among_many() {
+    local bindir="$TIXOLINK_TEST_ROOT/curl-f"
+    fake_curl_version_bin "$bindir" <<'EOF'
+curl 8.9.1 (test build)
+Protocols: dict file ftp ftps gopher gophers http https imap imaps ldap ldaps mqtt pop3 pop3s rtmp rtsp scp sftp smb smbs smtp smtps telnet tftp
+Features: alt-svc
+EOF
+    ( PATH="$bindir:$PATH" bootstrap::_curl_supports_https >/dev/null 2>&1 )
+}
+
+# Verifies the real installed host curl (not a fixture) is correctly
+# recognized - the exact gap that let RC2's broken detector ship: every
+# unit test redefined the seam, so none of them ever ran the real
+# function against real curl output.
+test_curl_https_detector_accepts_real_host_curl() {
+    command -v curl >/dev/null 2>&1 || return 0
+    bootstrap::_curl_supports_https >/dev/null 2>&1
 }
 
 # --- version / channel validation ------------------------------------------
@@ -643,6 +753,13 @@ th::run test_rejects_unsupported_arch
 th::run test_accepts_amd64_arch
 th::run test_rejects_missing_curl
 th::run test_rejects_curl_without_https
+th::run test_curl_https_detector_accepts_realistic_supported_output
+th::run test_curl_https_detector_rejects_protocol_list_without_https
+th::run test_curl_https_detector_rejects_unrelated_https_mention
+th::run test_curl_https_detector_rejects_missing_protocols_line
+th::run test_curl_https_detector_fails_closed_when_curl_version_fails
+th::run test_curl_https_detector_accepts_https_as_exact_token_among_many
+th::run test_curl_https_detector_accepts_real_host_curl
 th::run test_valid_version_accepts_plain
 th::run test_valid_version_accepts_rc
 th::run test_valid_version_rejects_garbage
