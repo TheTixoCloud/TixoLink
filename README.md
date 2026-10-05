@@ -2,13 +2,14 @@
 
 Linux tunnel management suite, by TheTixoCloud.
 
-> **Status: pre-release development (`0.6.0-dev`).** The foundation layer,
-> the GRE transport engine, Netfilter/HAProxy forwarding, diagnostics,
-> benchmarking, live monitoring, the network optimizer/BBR manager, and
-> the install/backup/restore/update/uninstall lifecycle are all
-> implemented and covered by unit and namespace-based integration tests.
-> Nothing here has had a tagged public release yet; APIs, CLI flags, and
-> the on-disk schema may still change between `0.x` versions. See
+> **Status: release candidate (`1.0.0-rc1`).** The foundation layer, the
+> GRE transport engine, Netfilter/HAProxy forwarding, diagnostics,
+> benchmarking, live monitoring, the network optimizer/BBR manager, the
+> non-interactive CLI, and the install/backup/restore/update/uninstall
+> lifecycle are all implemented and covered by unit and namespace-based
+> integration tests. This is a **release candidate**, not a declaration of
+> production stability — it has not yet had a tagged public release, and
+> CLI flags or the on-disk schema may still change before `1.0.0`. See
 > [CHANGELOG.md](CHANGELOG.md) for the detailed history.
 
 ## What this is

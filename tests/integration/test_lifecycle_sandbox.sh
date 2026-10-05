@@ -23,6 +23,12 @@ LOGD="$SANDBOX/var/log/tixolink"
 RUND="$SANDBOX/run/tixolink"
 UNIT="$SANDBOX/etc/systemd/system/tixolink@.service"
 
+# Every process this script spawns (install.sh/uninstall.sh directly, and
+# the installed binary via run_cli) must log inside the sandbox, never to
+# the real host's /var/log/tixolink - exporting it once here, before any
+# of those are invoked, covers all of them via environment inheritance.
+export TIXOLINK_LOG_FILE="$LOGD/tixolink.log"
+
 PASS=0
 FAIL=0
 pass() { PASS=$((PASS + 1)); printf '  ok - %s\n' "$1"; }

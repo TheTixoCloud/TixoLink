@@ -93,7 +93,7 @@ maintenance surface with no security benefit.
 Every persisted document (app config, each tunnel config, the state
 ledger, backup archives) carries an explicit integer `schema_version`,
 consumed by `lib/migration.sh`. Application version (`VERSION`, currently
-`0.6.0-dev`) and configuration schema version are deliberately separate
+`1.0.0-rc1`) and configuration schema version are deliberately separate
 concepts — a schema bump doesn't require a major version bump, and vice
 versa.
 

@@ -6,6 +6,11 @@ REPO_ROOT="$(cd -P "$TEST_DIR/../.." && pwd)"
 TIXOLINK_LIB_DIR="$REPO_ROOT/lib"
 export TIXOLINK_LIB_DIR
 
+TIXOLINK_TEST_ROOT="$(mktemp -d /tmp/tixolink-test.XXXXXXXX)"
+export TIXOLINK_LOG_FILE="$TIXOLINK_TEST_ROOT/tixolink.log"
+cleanup() { rm -rf -- "$TIXOLINK_TEST_ROOT"; }
+trap cleanup EXIT
+
 # shellcheck source=tests/lib/test_harness.sh
 source "$REPO_ROOT/tests/lib/test_harness.sh"
 # shellcheck source=lib/common.sh

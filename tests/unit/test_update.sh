@@ -31,10 +31,28 @@ test_vcmp_dev_is_less_than_bare() { th::assert_eq "$(update::_version_compare "0
 test_vcmp_bare_is_greater_than_dev() { th::assert_eq "$(update::_version_compare "0.6.0" "0.6.0-dev")" "1"; }
 test_vcmp_v_prefix_ignored() { th::assert_eq "$(update::_version_compare "v1.2.0" "1.2.0")" "0"; }
 
+# --- RC1 release-readiness SemVer matrix (TixoLink#Phase 8) ---------------------
+# 0.6.0-dev < 1.0.0-rc1 < 1.0.0-rc2 < 1.0.0 < 1.0.1, verified pairwise rather
+# than assuming transitivity, plus the two-digit rc ordering a plain lexical
+# suffix compare would get backwards ("rc10" vs "rc2").
+test_vcmp_dev_lt_rc1() { th::assert_eq "$(update::_version_compare "0.6.0-dev" "1.0.0-rc1")" "-1"; }
+test_vcmp_rc1_lt_rc2() { th::assert_eq "$(update::_version_compare "1.0.0-rc1" "1.0.0-rc2")" "-1"; }
+test_vcmp_rc1_lt_bare() { th::assert_eq "$(update::_version_compare "1.0.0-rc1" "1.0.0")" "-1"; }
+test_vcmp_rc2_lt_bare() { th::assert_eq "$(update::_version_compare "1.0.0-rc2" "1.0.0")" "-1"; }
+test_vcmp_bare_lt_patch() { th::assert_eq "$(update::_version_compare "1.0.0" "1.0.1")" "-1"; }
+test_vcmp_dev_lt_patch() { th::assert_eq "$(update::_version_compare "0.6.0-dev" "1.0.1")" "-1"; }
+test_vcmp_rc1_eq_rc1() { th::assert_eq "$(update::_version_compare "1.0.0-rc1" "1.0.0-rc1")" "0"; }
+test_vcmp_rc2_gt_rc10_would_be_wrong_lexically() { th::assert_eq "$(update::_version_compare "1.0.0-rc2" "1.0.0-rc10")" "-1"; }
+test_vcmp_rc10_gt_rc2() { th::assert_eq "$(update::_version_compare "1.0.0-rc10" "1.0.0-rc2")" "1"; }
+
 # --- update::check (mocked HTTP) -----------------------------------------------
 
 FIXTURE_RELEASE_NEWER='{"tag_name":"v9.9.9","html_url":"https://example.invalid/r","body":"notes"}'
-FIXTURE_RELEASE_SAME='{"tag_name":"v0.6.0-dev","html_url":"https://example.invalid/r","body":"notes"}'
+# "same as currently installed" must track whatever VERSION actually is,
+# not a hardcoded string, or this fixture silently goes stale on every
+# version bump (it did, across the 0.1.0-dev -> 0.6.0-dev -> 1.0.0-rc1
+# transitions).
+FIXTURE_RELEASE_SAME="$(printf '{"tag_name":"v%s","html_url":"https://example.invalid/r","body":"notes"}' "$(common::version)")"
 FIXTURE_RELEASE_OLDER='{"tag_name":"v0.0.1","html_url":"https://example.invalid/r","body":"notes"}'
 FIXTURE_RATE_LIMIT='{"message":"API rate limit exceeded","documentation_url":"https://docs.github.com"}'
 
@@ -125,6 +143,15 @@ th::run test_vcmp_numeric_less
 th::run test_vcmp_dev_is_less_than_bare
 th::run test_vcmp_bare_is_greater_than_dev
 th::run test_vcmp_v_prefix_ignored
+th::run test_vcmp_dev_lt_rc1
+th::run test_vcmp_rc1_lt_rc2
+th::run test_vcmp_rc1_lt_bare
+th::run test_vcmp_rc2_lt_bare
+th::run test_vcmp_bare_lt_patch
+th::run test_vcmp_dev_lt_patch
+th::run test_vcmp_rc1_eq_rc1
+th::run test_vcmp_rc2_gt_rc10_would_be_wrong_lexically
+th::run test_vcmp_rc10_gt_rc2
 th::run test_check_detects_newer_release
 th::run test_check_reports_up_to_date
 th::run test_check_older_release_not_available

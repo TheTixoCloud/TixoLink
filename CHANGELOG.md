@@ -2,11 +2,48 @@
 
 All notable changes to this project are documented in this file. Format
 loosely follows [Keep a Changelog](https://keepachangelog.com/); versioning
-follows [Semantic Versioning](https://semver.org/) pre-1.0 conventions
-(`0.MINOR.PATCH[-dev]` — breaking changes are still possible between
-`0.x` releases).
+follows [Semantic Versioning](https://semver.org/). Pre-1.0 development
+(`0.MINOR.PATCH[-dev]`) allowed breaking changes between `0.x` releases;
+`1.0.0-rcN` pre-release tags sort before their corresponding `1.0.0` per
+`modules/update.sh:update::_version_compare`.
 
-## [Unreleased] - current development version: `0.6.0-dev`
+## [1.0.0-rc1] - RELEASE CANDIDATE
+
+**This is a release candidate, not a declaration of production
+stability.** It is the first build intended as a release artifact rather
+than an in-progress development snapshot; it has not yet been exercised
+in production, and CLI flags or the on-disk schema may still change
+before `1.0.0`. See "RC1 known limitations" below.
+
+### Phase 8 — Release candidate preparation
+
+- `VERSION` bumped `0.6.0-dev` → `1.0.0-rc1`. Application version and
+  configuration `schema_version` remain deliberately separate axes (see
+  `docs/architecture.md`); this bump does not change any on-disk schema.
+- `modules/update.sh:update::_version_compare` (and the standalone,
+  deliberately-duplicated `install.sh:install::_vcmp`) now compares a
+  pre-release suffix's trailing digit run numerically when both sides
+  share the same non-numeric prefix (`rc2` < `rc10`), instead of a plain
+  lexical compare that would have ordered `rc10` before `rc2`. Added
+  `tests/unit/test_install_vcmp.sh` and an RC-ordering matrix in
+  `tests/unit/test_update.sh` covering `0.6.0-dev < 1.0.0-rc1 <
+  1.0.0-rc2 < 1.0.0 < 1.0.1` pairwise.
+- `lib/cli.sh --help`: removed a stale "lifecycle (install/update/backup)
+  commands are not implemented yet" note left over from before Phase 6 —
+  those commands are listed earlier in the same help text and have been
+  implemented (and tested) since Phase 6.
+- Release packaging (`packaging/build-release.sh`): builds a deterministic
+  `tixolink-<version>.tar.gz` from an explicit file allowlist
+  (`packaging/MANIFEST.txt`) rather than archiving the working tree,
+  normalizing file order/ownership/mtimes/permissions for reproducibility,
+  and writes a `SHA256SUMS` manifest alongside it. See
+  `docs/release-notes/1.0.0-rc1.md` for the RC1 release notes and known
+  limitations, and the RC1 readiness report (delivered alongside this
+  changelog entry, not committed to the repository) for the full
+  install-from-artifact/upgrade-simulation/regression/ShellCheck/security
+  results this candidate was validated against.
+
+## Pre-RC1 development history (Phases 1-7, folded into 1.0.0-rc1 above)
 
 This file previously stopped recording changes after the Phase 2
 foundation layer, even though Phases 3-5 had since landed. The entries

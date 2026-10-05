@@ -87,8 +87,6 @@ Flags (where applicable):
 
 Running "tixolink" with no command launches the interactive menu when
 connected to a terminal.
-
-Note: lifecycle (install/update/backup) commands are not implemented yet.
 EOF
 }
 

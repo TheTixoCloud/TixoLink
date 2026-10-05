@@ -117,6 +117,16 @@ install::_vcmp() {
     if [[ -z "$a_suf" && -n "$b_suf" ]]; then printf '1'; return; fi
     if [[ -n "$a_suf" && -z "$b_suf" ]]; then printf -- '-1'; return; fi
     if [[ "$a_suf" == "$b_suf" ]]; then printf '0'; return; fi
+
+    local a_pre="$a_suf" a_dig="" b_pre="$b_suf" b_dig=""
+    [[ "$a_suf" =~ ^([a-zA-Z]*)([0-9]+)$ ]] && { a_pre="${BASH_REMATCH[1]}"; a_dig="${BASH_REMATCH[2]}"; }
+    [[ "$b_suf" =~ ^([a-zA-Z]*)([0-9]+)$ ]] && { b_pre="${BASH_REMATCH[1]}"; b_dig="${BASH_REMATCH[2]}"; }
+    if [[ -n "$a_dig" && -n "$b_dig" && "$a_pre" == "$b_pre" ]]; then
+        if (( 10#$a_dig < 10#$b_dig )); then printf -- '-1'; return; fi
+        if (( 10#$a_dig > 10#$b_dig )); then printf '1'; return; fi
+        printf '0'; return
+    fi
+
     [[ "$a_suf" < "$b_suf" ]] && { printf -- '-1'; return; }
     printf '1'
 }

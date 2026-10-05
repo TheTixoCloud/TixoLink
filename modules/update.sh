@@ -45,9 +45,12 @@ update::_http_get_file() {
 # update::_version_compare <a> <b>
 # Prints -1, 0, or 1. Numeric dotted components compare numerically; a
 # "-suffix" (e.g. "-dev", "-rc1") sorts BEFORE the same bare numeric
-# version, since it denotes a pre-release of that version. Two different
-# suffixes on the same numeric version compare lexically - a deliberately
-# simple rule, not a full SemVer precedence implementation.
+# version, since it denotes a pre-release of that version. Two suffixes
+# that share a non-numeric prefix followed by a trailing digit run (e.g.
+# "rc1" vs "rc2", or "rc2" vs "rc10") compare that digit run numerically,
+# so "rc10" sorts after "rc2" rather than before it; any other pair of
+# differing suffixes falls back to a plain lexical compare - a
+# deliberately simple rule, not a full SemVer precedence implementation.
 update::_version_compare() {
     local a="${1#v}" b="${2#v}"
     local a_num="${a%%-*}" b_num="${b%%-*}"
@@ -71,6 +74,16 @@ update::_version_compare() {
     if [[ -z "$a_suf" && -n "$b_suf" ]]; then printf '1'; return 0; fi
     if [[ -n "$a_suf" && -z "$b_suf" ]]; then printf -- '-1'; return 0; fi
     if [[ "$a_suf" == "$b_suf" ]]; then printf '0'; return 0; fi
+
+    local a_pre="$a_suf" a_dig="" b_pre="$b_suf" b_dig=""
+    [[ "$a_suf" =~ ^([a-zA-Z]*)([0-9]+)$ ]] && { a_pre="${BASH_REMATCH[1]}"; a_dig="${BASH_REMATCH[2]}"; }
+    [[ "$b_suf" =~ ^([a-zA-Z]*)([0-9]+)$ ]] && { b_pre="${BASH_REMATCH[1]}"; b_dig="${BASH_REMATCH[2]}"; }
+    if [[ -n "$a_dig" && -n "$b_dig" && "$a_pre" == "$b_pre" ]]; then
+        if (( 10#$a_dig < 10#$b_dig )); then printf -- '-1'; return 0; fi
+        if (( 10#$a_dig > 10#$b_dig )); then printf '1'; return 0; fi
+        printf '0'; return 0
+    fi
+
     [[ "$a_suf" < "$b_suf" ]] && { printf -- '-1'; return 0; }
     printf '1'
 }
